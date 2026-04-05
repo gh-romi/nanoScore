@@ -25,7 +25,14 @@ class TranscriptionPipeline:
         """
         # Fallback if the user left the project name empty
         if not project_name.strip():
-            project_name = "Project_001"
+            # Find the next available default project name
+            i = 1
+            while True:
+                candidate = f"Project_{i:04d}"
+                if not (Path("Projects") / candidate).exists():
+                    project_name = candidate
+                    break
+                i += 1
             
         # Create master project folder
         base_dir = Path("Projects") / project_name

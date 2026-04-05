@@ -1,9 +1,11 @@
 import sys
 import os
+import re
+from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QLineEdit, 
                              QListWidget, QListWidgetItem, QAbstractItemView, 
-                             QFileDialog, QFrame)
+                             QFileDialog, QFrame, QGridLayout)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from engines.pipeline import TranscriptionPipeline
 
@@ -11,32 +13,36 @@ class DynamicListWidget(QListWidget):
     """A custom list widget that tells the window exactly how much space it needs."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.needed_height = 75 
+        self.needed_height = 90 
         
     def sizeHint(self):
         return QSize(700, self.needed_height)
 
 class VoiceRowWidget(QWidget):
     delete_requested = pyqtSignal(QWidget)
+    error_state_changed = pyqtSignal()
 
     def __init__(self, number):
         super().__init__()
         self.file_path = None
 
         layout = QHBoxLayout(self)
-        # Removed the right margin so the box aligns perfectly with the buttons below
         layout.setContentsMargins(0, 0, 0, 8) 
         
         self.box = QFrame()
-        self.box.setStyleSheet("""
+        self.box.setStyleSheet(
+            """
             QFrame {
                 background-color: white;
                 border: 2px solid #333333;
                 border-radius: 12px;
             }
         """)
-        box_layout = QHBoxLayout(self.box)
+        # --- GRID LAYOUT ---
+        box_layout = QGridLayout(self.box)
         box_layout.setContentsMargins(15, 10, 15, 10)
+        box_layout.setHorizontalSpacing(10)
+        box_layout.setVerticalSpacing(2) # Tight space between input and error
 
         self.num_label = QLabel(f"Voice {number}:")
         self.num_label.setStyleSheet("""
@@ -66,11 +72,16 @@ class VoiceRowWidget(QWidget):
                 background: white;
             }
         """)
+        
+        self.name_error = QLabel("")
+        self.name_error.setStyleSheet("color: #D32F2F; font-size: 13px; font-weight: bold; border: none;")
+        self.name_error.setVisible(False)
 
         self.file_btn = QPushButton("upload PDF file")
         self.file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.file_btn.setFixedWidth(180) 
-        self.file_btn.setStyleSheet("""
+        self.file_btn.setStyleSheet(
+            """
             QPushButton {
                 border: 1px solid #CCCCCC; 
                 border-radius: 6px;
@@ -101,10 +112,18 @@ class VoiceRowWidget(QWidget):
         """)
         self.delete_btn.clicked.connect(lambda: self.delete_requested.emit(self))
 
-        box_layout.addWidget(self.num_label)
-        box_layout.addWidget(self.name_input, 1) 
-        box_layout.addWidget(self.file_btn)
-        box_layout.addWidget(self.delete_btn)
+        # --- ASSEMBLE THE GRID ---
+        # Row 0: All main elements (Locked to vertically center with each other)
+        box_layout.addWidget(self.num_label, 0, 0, alignment=Qt.AlignmentFlag.AlignVCenter)
+        box_layout.addWidget(self.name_input, 0, 1, alignment=Qt.AlignmentFlag.AlignVCenter)
+        box_layout.addWidget(self.file_btn, 0, 2, alignment=Qt.AlignmentFlag.AlignVCenter)
+        box_layout.addWidget(self.delete_btn, 0, 3, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        # Row 1: The error message (Placed exactly under the input field in Column 1)
+        box_layout.addWidget(self.name_error, 1, 1, alignment=Qt.AlignmentFlag.AlignTop)
+
+        # Tell Column 1 (the input field) to stretch and fill extra space
+        box_layout.setColumnStretch(1, 1)
 
         layout.addWidget(self.box)
 
@@ -124,6 +143,47 @@ class VoiceRowWidget(QWidget):
                     color: #333333; 
                 }
             """)
+
+    def show_error(self, message):
+        self.name_input.setStyleSheet("""
+            QLineEdit {
+                color: #D32F2F; 
+                font-weight: bold; 
+                border: 2px solid #D32F2F;
+                border-radius: 6px;
+                background: #FFEBEE;
+                font-size: 16px;
+                padding: 4px 8px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #D32F2F;
+                background: white;
+            }
+        """)
+        self.name_error.setText(message)
+        if not self.name_error.isVisible():
+            self.name_error.setVisible(True)
+            self.error_state_changed.emit()
+
+    def clear_error(self):
+        self.name_input.setStyleSheet("""
+            QLineEdit {
+                color: #026BBC; 
+                font-weight: bold; 
+                border: 1px solid #E0E0E0;
+                border-radius: 6px;
+                background: #FAFAFA;
+                font-size: 16px;
+                padding: 4px 8px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #026BBC;
+                background: white;
+            }
+        """)
+        if self.name_error.isVisible():
+            self.name_error.setVisible(False)
+            self.error_state_changed.emit()
 
     def set_number(self, num):
         self.num_label.setText(f"Voice {num}:")
@@ -206,6 +266,7 @@ class CreateProjectScreen(QWidget):
                 font-size: 22px; 
                 font-weight: bold; 
                 color: #333333;
+                padding-top: 4px;
             }
         """)
         
@@ -230,9 +291,21 @@ class CreateProjectScreen(QWidget):
             }
         """)
         
-        pn_layout.addWidget(project_name_lbl)
-        pn_layout.addWidget(self.project_name_input, 1) # '1' forces the input to stretch and fill the remaining 700px
+        pn_layout.addWidget(project_name_lbl, alignment=Qt.AlignmentFlag.AlignTop)
+        
+        # Wrap the input and a hidden error label in a vertical layout
+        input_vbox = QVBoxLayout()
+        input_vbox.setContentsMargins(0, 0, 0, 0)
+        input_vbox.setSpacing(4)
+        input_vbox.addWidget(self.project_name_input)
+        
+        self.project_name_error = QLabel("")
+        self.project_name_error.setStyleSheet("color: #D32F2F; font-size: 13px; font-weight: bold;")
+        self.project_name_error.setVisible(False)
+        input_vbox.addWidget(self.project_name_error)
 
+        pn_layout.addLayout(input_vbox, 1) # '1' forces the layout to stretch and fill the remaining 700px
+        
         content_layout.addWidget(project_name_container, alignment=Qt.AlignmentFlag.AlignHCenter)
         content_layout.addSpacing(10) # Gap between the project name and the "Add voices" section
 
@@ -382,10 +455,10 @@ class CreateProjectScreen(QWidget):
         row_widget = VoiceRowWidget(current_count + 1)
         row_widget.delete_requested.connect(self.remove_voice_row)
 
+        row_widget.error_state_changed.connect(self.adjust_list_height)
+
         item = QListWidgetItem(self.voice_list)
-        # Width is set to a tiny number (100). 
-        # to fill the 700px list perfectly, without overflowing when the scrollbar appears.
-        item.setSizeHint(QSize(100, 75)) 
+        item.setSizeHint(QSize(100, 70)) 
         
         self.voice_list.addItem(item)
         self.voice_list.setItemWidget(item, row_widget)
@@ -417,18 +490,78 @@ class CreateProjectScreen(QWidget):
                 widget.set_number(i + 1)
 
     def adjust_list_height(self):
-        row_height = 75 
-        current_count = self.voice_list.count()
-        needed_height = current_count * row_height
+        """Calculates exact list height row-by-row based on if errors are visible."""
+        total_needed_height = 0
         
-        self.voice_list.needed_height = needed_height
+        for i in range(self.voice_list.count()):
+            item = self.voice_list.item(i)
+            widget = self.voice_list.itemWidget(item)
+            if widget:
+                # If error is showing, this row needs 90px. If not, it needs 70px.
+                row_height = 90 if widget.name_error.isVisible() else 70
+                
+                # Dynamically resize the specific list item
+                item.setSizeHint(QSize(100, row_height))
+                total_needed_height += row_height
+        
+        self.voice_list.needed_height = total_needed_height
         self.voice_list.updateGeometry() 
         
-        self.voice_list.setMaximumHeight(needed_height)
-        self.voice_list.setMinimumHeight(min(needed_height, row_height * 2)) 
+        self.voice_list.setMaximumHeight(total_needed_height)
+        self.voice_list.setMinimumHeight(min(total_needed_height, 70 * 2)) 
         
     def start_automatic_transcription(self):
         project_name = self.project_name_input.text().strip()
+        project_name = project_name.rstrip(' .')
+        
+        # Clear all previous voice errors
+        for i in range(self.voice_list.count()):
+            item = self.voice_list.item(i)
+            widget = self.voice_list.itemWidget(item)
+            if widget:
+                widget.clear_error()
+
+        # Reset UI to normal before checking for errors
+        self.project_name_input.setStyleSheet(
+            """
+            QLineEdit {
+                color: #026BBC; 
+                font-weight: bold; 
+                border: 1px solid #E0E0E0;
+                border-radius: 6px;
+                background: #FAFAFA;
+                font-size: 16px;
+                padding: 4px 10px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #026BBC;
+                background: white;
+            }
+        """)
+        self.project_name_error.setVisible(False)
+
+        reserved_names = {"CON", "PRN", "AUX", "NUL", 
+                          "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+                          "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"}
+        invalid_chars = r'[<>:"/\\|?*]'
+
+        # Validate user input
+        if project_name:
+            # 1. Check for Windows reserved names
+            if project_name.upper() in reserved_names:
+                self.show_project_name_error("Project name cannot be a system reserved name.")
+                return
+
+            # 2. Check for forbidden file system characters
+            if re.search(invalid_chars, project_name):
+                self.show_project_name_error("Project name contains restricted symbols (< > : \" / \\ | ? *).")
+                return
+                
+            # 3. Check if a project with this name already exists
+            if (Path("Projects") / project_name).exists():
+                self.show_project_name_error("A project with this name already exists. Please choose another.")
+                return
+
         voices_data = []
         
         # Gather data from every voice row in the list
@@ -437,6 +570,17 @@ class CreateProjectScreen(QWidget):
             widget = self.voice_list.itemWidget(item)
             if widget:
                 v_name = widget.name_input.text().strip()
+                v_name = v_name.rstrip(' .')
+
+                # Validate voice name if user provided one
+                if v_name:
+                    if v_name.upper() in reserved_names:
+                        widget.show_error("Voice name cannot be a system reserved name.")
+                        return
+                    if re.search(invalid_chars, v_name):
+                        widget.show_error("Voice name contains restricted symbols (< > : \" / \\ | ? *).")
+                        return
+
                 voices_data.append({
                     "name": v_name if v_name else f"Voice_{i+1:02d}", # Fallback to default name if empty
                     "pdf_path": widget.file_path
@@ -446,6 +590,25 @@ class CreateProjectScreen(QWidget):
         pipeline = TranscriptionPipeline()
         pipeline.run_automatic_pipeline(project_name, voices_data)
 
+    def show_project_name_error(self, message):
+        # Change input styling to a red alert state
+        self.project_name_input.setStyleSheet("""
+            QLineEdit {
+                color: #D32F2F; 
+                font-weight: bold; 
+                border: 2px solid #D32F2F;
+                border-radius: 6px;
+                background: #FFEBEE;
+                font-size: 16px;
+                padding: 4px 10px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #D32F2F;
+                background: white;
+            }
+        """)
+        self.project_name_error.setText(message)
+        self.project_name_error.setVisible(True)
 
 """
 if __name__ == "__main__":
