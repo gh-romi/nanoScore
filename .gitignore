@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+Projects/
+venv/
+runs/
+pdf_test/
+code_examples/
+_00_installer.md
+_02_classes.md
+_03_data_persistence.md
+_04_multithreading.md
+_CONTEXT.md
+_GUI.md
+_things_to_specify_later.md
