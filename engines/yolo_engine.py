@@ -90,6 +90,105 @@ class YoloInferenceEngine:
         
         return results_list
 
+    def predict_notes(self, 
+                         input_folder: str, 
+                         conf: float = 0.1, 
+                         iou: float = 0.2,
+                         save: bool = False,
+                         save_txt: bool = False,
+                         name: str = "yolo_predictions") -> List:
+        """
+        Runs notes prediction on all cropped staff images within a specified folder.
+        Uses specialized NMS settings for dense objects like musical notes.
+        """
+        if not os.path.isdir(input_folder):
+            raise NotADirectoryError(f"Input path is not a directory: {input_folder}")
+
+        print(f"Starting notes prediction on folder: {input_folder}")
+        start_time = time.time()
+
+        results_generator = self.model.predict(
+            source=input_folder,
+            conf=conf,
+            iou=iou,
+            save=save,
+            save_txt=save_txt,
+            save_conf=True,        
+            device='cpu',          
+            stream=True,           
+            batch=1,               
+            exist_ok=True,         
+            name=name,
+            agnostic_nms=True,     # Critical for notes (preventing overlaps between classes)
+            line_width=1           # Thinner lines for small objects
+        )
+
+        results_list = []
+        for i, result in enumerate(results_generator):
+            results_list.append(result)
+            
+            # --- MAYBE I WILL DELETE IT LATER ---
+            if i > 0 and i % 10 == 0:
+                print(f"Processed {i} images so far...")
+            # ------------------------------------
+
+        end_time = time.time()
+        total_seconds = end_time - start_time
+        minutes = int(total_seconds // 60)
+        seconds = int(total_seconds % 60)
+        
+        print(f"Prediction complete for folder '{input_folder}'.")
+        print(f"Processing took {minutes} minutes and {seconds} seconds.")
+        
+        return results_list
+
+    def classify_position(self, 
+                          input_folder: str, 
+                          save: bool = False,
+                          save_txt: bool = False,
+                          name: str = "yolo_classification") -> List:
+        """
+        Runs position classification on square-padded cropped symbols.
+        Uses verbose=False to minimize terminal spam during high-volume processing.
+        """
+        if not os.path.isdir(input_folder):
+            raise NotADirectoryError(f"Input path is not a directory: {input_folder}")
+
+        print(f"Starting position classification on folder: {input_folder}")
+        start_time = time.time()
+
+        results_generator = self.model.predict(
+            source=input_folder,
+            save=save,
+            save_txt=save_txt,
+            save_conf=True,        
+            device='cpu',          
+            stream=True,           
+            batch=1,               
+            exist_ok=True,         
+            name=name,
+            verbose=False          # Kills the terminal spam for high volume
+        )
+
+        results_list = []
+        for i, result in enumerate(results_generator):
+            results_list.append(result)
+            
+            # --- MAYBE I WILL DELETE IT LATER ---
+            if i > 0 and i % 500 == 0:
+                print(f"Classified {i} images so far...")
+            # ------------------------------------
+
+        end_time = time.time()
+        total_seconds = end_time - start_time
+        minutes = int(total_seconds // 60)
+        seconds = int(total_seconds % 60)
+        
+        print(f"Classification complete for folder '{input_folder}'.")
+        print(f"Processing took {minutes} minutes and {seconds} seconds.")
+        
+        return results_list
+
 # Example of how to use this class (for demonstration)
 if __name__ == '__main__':
     # This block will only run when the script is executed directly
