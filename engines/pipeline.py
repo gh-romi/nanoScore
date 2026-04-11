@@ -4,6 +4,7 @@ import fitz  # PyMuPDF
 import cv2
 from pathlib import Path
 from engines.yolo_engine import YoloInferenceEngine
+from engines.data_process_engine import DataProcessEngine
 
 class TranscriptionPipeline:
     """
@@ -43,6 +44,8 @@ class TranscriptionPipeline:
         
         print(f"Started Automatic Pipeline for project: {project_name}")
         
+
+
         # --- PHASE 1: Staff Detection & Cropping ---
         print("\n--- Starting Phase 1: Staff Detection & Cropping ---")
         for idx, voice in enumerate(voices_data, start=1):
@@ -178,6 +181,8 @@ class TranscriptionPipeline:
                 
             print(f"Successfully created JSON payload for {voice_folder_name} at {json_path}")
 
+
+
         # --- PHASE 2: Notes Detection & JSON Update ---
         print("\n--- Starting Phase 2: Notes Detection ---")
         for idx, voice in enumerate(voices_data, start=1):
@@ -245,6 +250,8 @@ class TranscriptionPipeline:
                 json.dump(voice_json_data, f, indent=4)
                 
             print(f"Successfully updated JSON with notes for {voice_folder_name} at {json_path}")
+
+
 
         # --- PHASE 3: Symbol Cropping & Position Classification ---
         print("\n--- Starting Phase 3: Position Classification ---")
@@ -371,3 +378,131 @@ class TranscriptionPipeline:
                 json.dump(voice_json_data, f, indent=4)
                 
             print(f"Successfully finalized JSON with position classes for {voice_folder_name} at {json_path}")
+
+
+        # --- PHASE 4: Agnostic to Partially Semantic ---
+        print("\n--- Starting Phase 4: Agnostic to Partially Semantic ---")
+        data_engine = DataProcessEngine()
+        
+        for idx, voice in enumerate(voices_data, start=1):
+            voice_folder_name = f"Voice_{idx:02d}"
+            voice_dir = base_dir / voice_folder_name
+            json_path = voice_dir / f"{voice_folder_name}_data.json"
+            out_json_path = voice_dir / f"{voice_folder_name}_partially_semantic_data.json"
+            
+            if not json_path.exists():
+                continue
+                
+            print(f"Generating partially semantic data for {voice_folder_name}...")
+            
+            with open(json_path, "r", encoding="utf-8") as f:
+                agnostic_data = json.load(f)
+                
+            partially_semantic_data = data_engine.process_agnostic_to_partially_semantic(agnostic_data)
+            
+            with open(out_json_path, "w", encoding="utf-8") as f:
+                json.dump(partially_semantic_data, f, indent=4)
+                
+            print(f"Successfully created partially semantic JSON for {voice_folder_name} at {out_json_path}")
+
+
+        # --- PHASE 5: Partially Semantic to Fully Semantic ---
+        print("\n--- Starting Phase 5: Partially Semantic to Fully Semantic ---")
+        
+        cheatsheet_path = Path("semantic_cheatsheet.json")
+        if not cheatsheet_path.exists():
+            print(f"Warning: Cannot find {cheatsheet_path} in the root directory. Phase 5 skipped.")
+        else:
+            with open(cheatsheet_path, "r", encoding="utf-8") as f:
+                cheatsheet = json.load(f)
+                
+            # 1. Load all partially semantic data into memory
+            all_partially_semantic_data = []
+            for idx, voice in enumerate(voices_data, start=1):
+                voice_folder_name = f"Voice_{idx:02d}"
+                voice_dir = base_dir / voice_folder_name
+                in_json_path = voice_dir / f"{voice_folder_name}_partially_semantic_data.json"
+                out_json_path = voice_dir / f"{voice_folder_name}_semantic_data.json"
+                
+                if not in_json_path.exists():
+                    continue
+                    
+                with open(in_json_path, "r", encoding="utf-8") as f:
+                    partially_semantic_data = json.load(f)
+                
+                all_partially_semantic_data.append((voice_folder_name, partially_semantic_data, out_json_path))
+
+            # 2. Global Pre-Scan: Check ALL voices for coloration
+            global_requires_coloration = False
+            for _, p_data, _ in all_partially_semantic_data:
+                for p_measure in p_data.get("measures", []):
+                    for event in p_measure.get("events", []):
+                        if event.get("class_id") == 22:
+                            global_requires_coloration = True
+                            break
+                    if global_requires_coloration: break
+                if global_requires_coloration: break
+
+            # 3. Process each voice using the global coloration flag
+            all_fully_semantic_data = []
+            for voice_folder_name, partially_semantic_data, out_json_path in all_partially_semantic_data:
+                print(f"Generating fully semantic data for {voice_folder_name}...")
+                
+                fully_semantic_data = data_engine.process_partially_semantic_to_semantic(
+                    partially_semantic_data, cheatsheet, global_requires_coloration
+                )
+                
+                with open(out_json_path, "w", encoding="utf-8") as f:
+                    json.dump(fully_semantic_data, f, indent=4)
+                    
+                all_fully_semantic_data.append(fully_semantic_data)
+                print(f"Successfully created fully semantic JSON for {voice_folder_name} at {out_json_path}")
+
+
+        # --- PHASE 6: MusicXML Generation & Synchronization ---
+        print("\n--- Starting Phase 6: MusicXML Generation & Global Sync ---")
+        if not all_fully_semantic_data:
+            print("No valid semantic data found to generate MusicXML. Skipping Phase 6.")
+            return
+
+        final_score_data = all_fully_semantic_data
+
+        if len(all_fully_semantic_data) == 1:
+            # SINGLE VOICE PIPELINE
+            voice_name = all_fully_semantic_data[0].get("voice", "Voice_1")
+            out_xml_path = base_dir / f"{project_name}.musicxml"
+            print(f"Generating MusicXML for single voice: {voice_name}...")
+            data_engine.generate_musicxml(all_fully_semantic_data, cheatsheet, str(out_xml_path), project_name)
+            print(f"Successfully created {out_xml_path}")
+        else:
+            # MULTIPLE VOICES PIPELINE
+            for v_data in all_fully_semantic_data:
+                voice_name = v_data.get("voice", "Unknown_Voice")
+                out_xml_path = base_dir / f"{project_name}_{voice_name}.musicxml"
+                print(f"Generating individual MusicXML for {voice_name}...")
+                data_engine.generate_musicxml([v_data], cheatsheet, str(out_xml_path), project_name)
+                
+            print("\nSynchronizing global measures across all voices...")
+            synced_data = data_engine.sync_voices(all_fully_semantic_data)
+            final_score_data = synced_data
+            
+            # Optional but recommended: Save the fully synchronized data back to JSON for user debugging
+            for idx, v_data in enumerate(synced_data, start=1):
+                voice_folder_name = f"Voice_{idx:02d}"
+                out_json_path = base_dir / voice_folder_name / f"{voice_folder_name}_semantic_data.json"
+                with open(out_json_path, "w", encoding="utf-8") as f:
+                    json.dump(v_data, f, indent=4)
+                    
+            combined_xml_path = base_dir / f"{project_name}.musicxml"
+            print(f"Generating combined synchronized MusicXML...")
+            data_engine.generate_musicxml(synced_data, cheatsheet, str(combined_xml_path), project_name)
+            print(f"Successfully created master score at {combined_xml_path}")
+
+
+        # --- PHASE 7: Duration Validation ---
+        print("\n--- Starting Phase 7: Duration Validation ---")
+        if final_score_data:
+            val_out_path = base_dir / f"{project_name}_validation.json"
+            print(f"Generating measure duration validation report...")
+            data_engine.generate_duration_validation(final_score_data, str(val_out_path))
+            print(f"Successfully created validation report at {val_out_path}")
