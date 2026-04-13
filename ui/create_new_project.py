@@ -7,6 +7,10 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QListWidget, QListWidgetItem, QAbstractItemView, 
                              QFileDialog, QFrame, QGridLayout)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtSvgWidgets import QSvgWidget
+
+
+
 
 class DynamicListWidget(QListWidget):
     """A custom list widget that tells the window exactly how much space it needs."""
@@ -16,6 +20,55 @@ class DynamicListWidget(QListWidget):
         
     def sizeHint(self):
         return QSize(700, self.needed_height)
+
+
+
+class SvgTextHoverButton(QPushButton):
+    """A custom button that swaps an SVG and changes text color on hover."""
+    def __init__(self, text, normal_svg_path, hover_svg_path, icon_size=40):
+        super().__init__()
+        self.normal_svg = normal_svg_path
+        self.hover_svg = hover_svg_path
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background: transparent; border: none;")
+
+        # Force the outer button to be 80px wide and 40px tall
+        self.setFixedSize(80, 40)
+
+        # Layout to hold the icon and text perfectly aligned
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 2) 
+        layout.setSpacing(8) # Space between the arrow and the text
+
+        # 1. The SVG Icon
+        self.icon_widget = QSvgWidget(self.normal_svg)
+        self.icon_widget.setFixedSize(icon_size, icon_size)
+        self.icon_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.icon_widget.setStyleSheet("background: transparent; border: none;")
+
+        # 2. The Text
+        self.text_label = QLabel(text)
+        self.text_label.setStyleSheet("color: white; font-size: 20px; font-weight: bold; background: transparent; border: none;")
+
+        layout.addWidget(self.icon_widget)
+        layout.addWidget(self.text_label)
+        layout.addStretch()
+
+    # --- THE HOVER ---
+    def enterEvent(self, event):
+        """Triggered when the mouse touches the button."""
+        self.icon_widget.load(self.hover_svg)
+        self.text_label.setStyleSheet("color: #CCCCCC; font-size: 20px; font-weight: bold; background: transparent; border: none;")
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Triggered when the mouse leaves the button."""
+        self.icon_widget.load(self.normal_svg)
+        self.text_label.setStyleSheet("color: white; font-size: 20px; font-weight: bold; background: transparent; border: none;")
+        super().leaveEvent(event)
+
+
 
 class VoiceRowWidget(QWidget):
     delete_requested = pyqtSignal(QWidget)
@@ -209,22 +262,14 @@ class CreateProjectScreen(QWidget):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(20, 0, 20, 0)
 
-        back_btn = QPushButton("< Go back")
-        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_btn.setStyleSheet("""
-            QPushButton { 
-                color: white; 
-                font-size: 20px; 
-                font-weight: bold; 
-                border: none; 
-                background: transparent; 
-                padding-bottom: 2px; 
-            } 
-            QPushButton:hover { 
-                color: #CCCCCC; 
-            }
-        """)
-
+        # --- SVG BACK BUTTON ---
+        # Make sure you have downloaded two versions of your left-arrow icon!
+        back_btn = SvgTextHoverButton(
+            text="Back", 
+            normal_svg_path="icons/Back.svg", 
+            hover_svg_path="icons/Back_gray.svg", 
+            icon_size=20
+        )
         back_btn.clicked.connect(self.go_back_requested.emit)
 
         title_label = QLabel("Create new project")

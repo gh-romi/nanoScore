@@ -467,6 +467,7 @@ class TranscriptionProgressScreen(QWidget):
         dialog = CancelDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             if self.worker and self.worker.isRunning():
+                self.worker.set_aborted()
                 # Brutally terminate thread (will drop progress on the current voice loop)
                 self.worker.terminate()
                 self.worker.wait()
@@ -509,6 +510,20 @@ class TranscriptionWorker(QThread):
             general_progress_callback=self.general_progress.emit
         )
         self.finished_success.emit()
+        
+    def set_aborted(self):
+        import json
+        from pathlib import Path
+        state_path = Path("Projects") / self.project_name / "project_state.json"
+        if state_path.exists():
+            try:
+                with open(state_path, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                state["global_state"]["is_aborted"] = 1
+                with open(state_path, "w", encoding="utf-8") as f:
+                    json.dump(state, f, indent=4)
+            except Exception as e:
+                print("Failed to set aborted state:", e)
 
 
 

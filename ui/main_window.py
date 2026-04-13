@@ -2,7 +2,9 @@
 import config
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QLabel, QFrame, QDialog)
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtGui import QIcon
+from PyQt6.QtSvgWidgets import QSvgWidget
 
 
 
@@ -64,6 +66,47 @@ class AboutDialog(QDialog):
 
 
 
+class SvgHoverButton(QPushButton):
+    """A custom button that swaps SVG files on hover to simulate a color change."""
+    def __init__(self, normal_svg_path, hover_svg_path, icon_size=35):
+        super().__init__()
+        self.normal_svg = normal_svg_path
+        self.hover_svg = hover_svg_path
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background: transparent; border: none;")
+
+        # --- THE FIX ---
+        # Make the outer button exactly big enough to hold the icon safely
+        self.setFixedSize(icon_size + 10, icon_size + 10) 
+
+        # Layout to perfectly center the SVG
+        layout = QVBoxLayout(self)
+        # Remove the bottom margin we had before so it perfectly centers
+        layout.setContentsMargins(0, 0, 0, 0) 
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Create the razor-sharp SVG widget
+        self.icon_widget = QSvgWidget(self.normal_svg)
+        self.icon_widget.setFixedSize(icon_size, icon_size)
+        self.icon_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.icon_widget.setStyleSheet("background: transparent; border: none;")
+
+        layout.addWidget(self.icon_widget)
+
+    # --- THE HOVER MAGIC ---
+    def enterEvent(self, event):
+        """Triggered when the mouse touches the button."""
+        self.icon_widget.load(self.hover_svg)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Triggered when the mouse leaves the button."""
+        self.icon_widget.load(self.normal_svg)
+        super().leaveEvent(event)
+
+
+
 class MainMenuScreen(QWidget):
     # signal tells the Master Window to switch screens
     go_to_create_project = pyqtSignal() 
@@ -83,21 +126,10 @@ class MainMenuScreen(QWidget):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(20, 0, 20, 0)
 
-        self.hamburger_btn = QPushButton("≡")
-        self.hamburger_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.hamburger_btn.setStyleSheet(
-            """
-            QPushButton { 
-            color: white; 
-            font-size: 48px; 
-            border: none; 
-            background: transparent; 
-            padding-bottom: 12px; 
-            }
-            QPushButton:hover { color: #CCCCCC; }
-        """)
-
+        # --- SVG HAMBURGER (MENU) BUTTON ---
+        self.hamburger_btn = SvgHoverButton("icons/Menu.svg", "icons/Menu_gray.svg", icon_size=35)
         self.hamburger_btn.clicked.connect(self.toggle_drawer)
+
         title_label = QLabel(config.APP_NAME)
         title_label.setStyleSheet(
             """
@@ -176,29 +208,72 @@ class MainMenuScreen(QWidget):
         drawer_layout.setContentsMargins(0, 0, 0, 0) 
         drawer_layout.setSpacing(0)
 
-        self.close_menu_btn = QPushButton("✕")
+        # " ✕ close menu" button
+        self.close_menu_btn = QPushButton()
         self.close_menu_btn.setFixedHeight(60) 
         self.close_menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.close_menu_btn.setStyleSheet("""
             QPushButton {
-                color: #026BBC; font-size: 32px; background: transparent; border: none;
-                border-bottom: 2px solid #026BBC; text-align: left; padding-left: 25px; padding-bottom: 4px;
+                background: transparent; border: none;
+                border-bottom: 2px solid #026BBC; 
             }
             QPushButton:hover { background-color: #E6F0FA; }
         """)
         self.close_menu_btn.clicked.connect(self.toggle_drawer)
 
-        self.about_btn = QPushButton("ⓘ  About")
+        # Put a layout INSIDE the close button to hold the icon perfectly
+        close_layout = QHBoxLayout(self.close_menu_btn)
+        close_layout.setContentsMargins(17, 0, 0, 4) 
+
+        close_icon = QSvgWidget("icons/Cross.svg")
+        close_icon.setFixedSize(50, 50)
+        
+        # Force complete transparency behind the SVG
+        close_icon.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        close_icon.setStyleSheet("background: transparent; border: none;")
+
+        # Add the icon to the layout and push it to the left
+        close_layout.addWidget(close_icon)
+        close_layout.addStretch()
+
+        # "About" button
+        self.about_btn = QPushButton()
         self.about_btn.setFixedHeight(60)
         self.about_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.about_btn.setStyleSheet("""
             QPushButton {
-                color: #026BBC; font-size: 26px; font-weight: bold; background: transparent; border: none;
-                border-bottom: 2px solid #026BBC; text-align: left; padding-left: 20px; padding-bottom: 4px;
+                background: transparent; border: none;
+                border-bottom: 2px solid #026BBC; 
             }
             QPushButton:hover { background-color: #E6F0FA; }
         """)
         self.about_btn.clicked.connect(self.show_about_dialog)
+        # --------------------------------------
+
+        # 2. Put a layout INSIDE the button to hold the icon and text
+        btn_layout = QHBoxLayout(self.about_btn)
+        
+        # offset format: (Left, Top, Right, Bottom)
+        btn_layout.setContentsMargins(25, 0, 0, 4) 
+        btn_layout.setSpacing(15) # Space between the icon and the text
+
+        icon_widget = QSvgWidget("icons/Info.svg")
+        icon_widget.setFixedSize(35, 35)
+        
+        # Delete the Qt white background just in case!
+        icon_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        icon_widget.setStyleSheet("background: transparent; border: none;")
+        
+        # 4. Create the Text
+        text_label = QLabel("About")
+        text_label.setStyleSheet("color: #026BBC; font-size: 26px; font-weight: bold; background: transparent; border: none;")
+
+        # 5. Add them to the button's layout
+        btn_layout.addWidget(icon_widget)
+        btn_layout.addWidget(text_label)
+        btn_layout.addStretch() # Pushes everything to the left
+
+        #self.about_btn.clicked.connect(self.show_about_dialog)
 
         drawer_layout.addWidget(self.close_menu_btn)
         drawer_layout.addWidget(self.about_btn)
