@@ -7,7 +7,6 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QListWidget, QListWidgetItem, QAbstractItemView, 
                              QFileDialog, QFrame, QGridLayout)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from engines.pipeline import TranscriptionPipeline
 
 class DynamicListWidget(QListWidget):
     """A custom list widget that tells the window exactly how much space it needs."""
@@ -192,6 +191,7 @@ class VoiceRowWidget(QWidget):
 class CreateProjectScreen(QWidget):
     # This signal tells the Master Window to go back
     go_back_requested = pyqtSignal()
+    start_transcription_requested = pyqtSignal(str, list)
 
     def __init__(self):
         super().__init__()
@@ -286,7 +286,7 @@ class CreateProjectScreen(QWidget):
                 padding: 4px 10px;
             }
             QLineEdit:focus {
-                border: 1px solid #026BBC;
+                border: 2px solid #026BBC;
                 background: white;
             }
         """)
@@ -562,6 +562,10 @@ class CreateProjectScreen(QWidget):
                 self.show_project_name_error("A project with this name already exists. Please choose another.")
                 return
 
+        if self.voice_list.count() == 0:
+            self.show_project_name_error("Please add at least one voice before starting.")
+            return
+
         voices_data = []
         
         # Gather data from every voice row in the list
@@ -581,14 +585,16 @@ class CreateProjectScreen(QWidget):
                         widget.show_error("Voice name contains restricted symbols (< > : \" / \\ | ? *).")
                         return
 
+                if not widget.file_path:
+                    widget.show_error("Please upload a PDF file for this voice.")
+                    return
+
                 voices_data.append({
                     "name": v_name if v_name else f"Voice_{i+1:02d}", # Fallback to default name if empty
                     "pdf_path": widget.file_path
                 })
                 
-        # Instantiate our engine orchestration and execute it
-        pipeline = TranscriptionPipeline()
-        pipeline.run_automatic_pipeline(project_name, voices_data)
+        self.start_transcription_requested.emit(project_name, voices_data)
 
     def show_project_name_error(self, message):
         # Change input styling to a red alert state

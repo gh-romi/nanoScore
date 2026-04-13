@@ -30,7 +30,8 @@ class YoloInferenceEngine:
                          iou: float = 0.4,
                          save: bool = False,
                          save_txt: bool = False,
-                         name: str = "yolo_predictions") -> List:
+                         name: str = "yolo_predictions",
+                         progress_callback=None) -> List:
         """
         Runs prediction on all images within a specified folder.
 
@@ -67,15 +68,16 @@ class YoloInferenceEngine:
             name=name # Default output subfolder name
         )
 
+        valid_exts = {'.png', '.jpg', '.jpeg', '.pdf', '.tiff', '.bmp'}
+        total_files = len([f for f in os.listdir(input_folder) if os.path.splitext(f)[1].lower() in valid_exts])
+
         # Iterate through the generator to get all results
         results_list = []
         for i, result in enumerate(results_generator):
             results_list.append(result)
             
-            # --- MAYBE I WILL DELETE IT LATER ---
-            if i > 0 and i % 10 == 0:
-                print(f"Processed {i} images so far...")
-            # ------------------------------------
+            if progress_callback:
+                progress_callback(i + 1, total_files)
             # You could add more detailed per-image processing here if needed
             # For example, printing the number of boxes found in each image:
             # print(f"Found {len(result.boxes)} objects in {os.path.basename(result.path)}")
@@ -96,7 +98,8 @@ class YoloInferenceEngine:
                          iou: float = 0.2,
                          save: bool = False,
                          save_txt: bool = False,
-                         name: str = "yolo_predictions") -> List:
+                         name: str = "yolo_predictions",
+                         progress_callback=None) -> List:
         """
         Runs notes prediction on all cropped staff images within a specified folder.
         Uses specialized NMS settings for dense objects like musical notes.
@@ -123,14 +126,14 @@ class YoloInferenceEngine:
             line_width=1           # Thinner lines for small objects
         )
 
+        valid_exts = {'.png', '.jpg', '.jpeg', '.pdf', '.tiff', '.bmp'}
+        total_files = len([f for f in os.listdir(input_folder) if os.path.splitext(f)[1].lower() in valid_exts])
+
         results_list = []
         for i, result in enumerate(results_generator):
             results_list.append(result)
-            
-            # --- MAYBE I WILL DELETE IT LATER ---
-            if i > 0 and i % 10 == 0:
-                print(f"Processed {i} images so far...")
-            # ------------------------------------
+            if progress_callback:
+                progress_callback(i + 1, total_files)
 
         end_time = time.time()
         total_seconds = end_time - start_time
@@ -146,7 +149,8 @@ class YoloInferenceEngine:
                           input_folder: str, 
                           save: bool = False,
                           save_txt: bool = False,
-                          name: str = "yolo_classification") -> List:
+                          name: str = "yolo_classification",
+                          progress_callback=None) -> List:
         """
         Runs position classification on square-padded cropped symbols.
         Uses verbose=False to minimize terminal spam during high-volume processing.
@@ -170,14 +174,16 @@ class YoloInferenceEngine:
             verbose=False          # Kills the terminal spam for high volume
         )
 
+        valid_exts = {'.png', '.jpg', '.jpeg', '.pdf', '.tiff', '.bmp'}
+        total_files = len([f for f in os.listdir(input_folder) if os.path.splitext(f)[1].lower() in valid_exts])
+
         results_list = []
         for i, result in enumerate(results_generator):
             results_list.append(result)
-            
-            # --- MAYBE I WILL DELETE IT LATER ---
-            if i > 0 and i % 500 == 0:
-                print(f"Classified {i} images so far...")
-            # ------------------------------------
+            if progress_callback:
+                if i == 0 or (i + 1) % 50 == 0 or (i + 1) == total_files:
+                    val = f">{i + 1}" if (i + 1) < total_files else total_files
+                    progress_callback(val, total_files)
 
         end_time = time.time()
         total_seconds = end_time - start_time

@@ -18,7 +18,7 @@ class TranscriptionPipeline:
         self.notes_engine = YoloInferenceEngine(model_path=notes_model_path)
         self.position_engine = YoloInferenceEngine(model_path=position_model_path)
         
-    def run_automatic_pipeline(self, project_name: str, voices_data: list):
+    def run_automatic_pipeline(self, project_name: str, voices_data: list, step_callback=None, voice_progress_callback=None, general_progress_callback=None):
         """
         Executes the first phase of automatic notes transcription.
         
@@ -48,7 +48,9 @@ class TranscriptionPipeline:
 
         # --- PHASE 1: Staff Detection & Cropping ---
         print("\n--- Starting Phase 1: Staff Detection & Cropping ---")
+        if step_callback: step_callback(1)
         for idx, voice in enumerate(voices_data, start=1):
+            if voice_progress_callback: voice_progress_callback(idx - 1, "processing", 0, "?")
             voice_folder_name = f"Voice_{idx:02d}"
             voice_dir = base_dir / voice_folder_name
             images_dir = voice_dir / "page_images"
@@ -91,8 +93,9 @@ class TranscriptionPipeline:
             # TODO: DELETE save=True (used for testing output right now)
             results = self.staff_engine.predict_staff(
                 input_folder=str(images_dir),
-                save=True, 
-                name=f"{project_name}_{voice_folder_name}_staves"
+                #save=True, 
+                name=f"{project_name}_{voice_folder_name}_staves",
+                progress_callback=(lambda c, t, i=idx: voice_progress_callback(i - 1, "processing", c, t)) if voice_progress_callback else None
             )
             
             # 3. Crop Staves & Save initial JSON Structure
@@ -180,13 +183,16 @@ class TranscriptionPipeline:
                 json.dump(voice_json_data, json_file, indent=4)
                 
             print(f"Successfully created JSON payload for {voice_folder_name} at {json_path}")
+            if voice_progress_callback: voice_progress_callback(idx - 1, "done", len(results), len(results))
 
 
 
         # --- PHASE 2: Notes Detection & JSON Update ---
         print("\n--- Starting Phase 2: Notes Detection ---")
+        if step_callback: step_callback(2)
         for idx, voice in enumerate(voices_data, start=1):
             voice_folder_name = f"Voice_{idx:02d}"
+            if voice_progress_callback: voice_progress_callback(idx - 1, "processing", 0, "?")
             voice_dir = base_dir / voice_folder_name
             staff_images_dir = voice_dir / "Staff_images"
             json_path = voice_dir / f"{voice_folder_name}_data.json"
@@ -199,8 +205,9 @@ class TranscriptionPipeline:
             # TODO: DELETE save=True (used for testing output right now)
             results = self.notes_engine.predict_notes(
                 input_folder=str(staff_images_dir),
-                save=True, 
-                name=f"{project_name}_{voice_folder_name}_notes"
+                #save=True, 
+                name=f"{project_name}_{voice_folder_name}_notes",
+                progress_callback=(lambda c, t, i=idx: voice_progress_callback(i - 1, "processing", c, t)) if voice_progress_callback else None
             )
             
             # Load JSON to dynamically update
@@ -250,6 +257,7 @@ class TranscriptionPipeline:
                 json.dump(voice_json_data, f, indent=4)
                 
             print(f"Successfully updated JSON with notes for {voice_folder_name} at {json_path}")
+            if voice_progress_callback: voice_progress_callback(idx - 1, "done", len(results), len(results))
 
 
 
@@ -259,8 +267,10 @@ class TranscriptionPipeline:
         BASE_CROP_WIDTH = 80
         F_CLEF_WIDTH = 95  # 50 + 15px
         
+        if step_callback: step_callback(3)
         for idx, voice in enumerate(voices_data, start=1):
             voice_folder_name = f"Voice_{idx:02d}"
+            if voice_progress_callback: voice_progress_callback(idx - 1, "processing", 0, "?")
             voice_dir = base_dir / voice_folder_name
             symbol_crops_dir = voice_dir / "Symbol_crops"
             json_path = voice_dir / f"{voice_folder_name}_data.json"
@@ -340,8 +350,9 @@ class TranscriptionPipeline:
             # TODO: DELETE save=True (used for testing output right now)
             results = self.position_engine.classify_position(
                 input_folder=str(symbol_crops_dir),
-                save=True,
-                name=f"{project_name}_{voice_folder_name}_positions"
+                #save=True,
+                name=f"{project_name}_{voice_folder_name}_positions",
+                progress_callback=(lambda c, t, i=idx: voice_progress_callback(i - 1, "processing", c, t)) if voice_progress_callback else None
             )
             
             for result in results:
@@ -378,10 +389,13 @@ class TranscriptionPipeline:
                 json.dump(voice_json_data, f, indent=4)
                 
             print(f"Successfully finalized JSON with position classes for {voice_folder_name} at {json_path}")
+            if voice_progress_callback: voice_progress_callback(idx - 1, "done", len(results), len(results))
 
 
         # --- PHASE 4: Agnostic to Partially Semantic ---
         print("\n--- Starting Phase 4: Agnostic to Partially Semantic ---")
+        if step_callback: step_callback(4)
+        if general_progress_callback: general_progress_callback("Processing and saving MusicXML files", "processing", 0, 1)
         data_engine = DataProcessEngine()
         
         for idx, voice in enumerate(voices_data, start=1):
@@ -506,3 +520,4 @@ class TranscriptionPipeline:
             print(f"Generating measure duration validation report...")
             data_engine.generate_duration_validation(final_score_data, str(val_out_path))
             print(f"Successfully created validation report at {val_out_path}")
+        if general_progress_callback: general_progress_callback("Processing and saving MusicXML files", "done", 1, 1)
