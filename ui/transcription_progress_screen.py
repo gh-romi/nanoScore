@@ -232,6 +232,7 @@ class VoiceProgressRowWidget(QWidget):
 
 class TranscriptionProgressScreen(QWidget):
     cancel_transcription_requested = pyqtSignal()
+    transcription_finished = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -360,6 +361,7 @@ class TranscriptionProgressScreen(QWidget):
         self.set_current_step(2)
 
     def start_transcription(self, project_name, voices_data):
+        self.current_project_name = project_name
         self.populate_voices(voices_data)
         
         self.worker = TranscriptionWorker(project_name, voices_data)
@@ -478,7 +480,8 @@ class TranscriptionProgressScreen(QWidget):
         self.set_current_step(step_num)
 
     def on_finished(self):
-        pass
+        if hasattr(self, 'current_project_name'):
+            self.transcription_finished.emit(self.current_project_name)
 
     def simulate_mock_state_for_testing(self):
         if self.voice_list.count() >= 4:

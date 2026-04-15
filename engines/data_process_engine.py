@@ -865,9 +865,15 @@ class DataProcessEngine:
 
         divisions = voices_data[0].get("divisions", 12)
         num_measures = len(voices_data[0].get("measures", []))
+        
+        voice_names = []
+        for i, voice in enumerate(voices_data):
+            v_name = voice.get("voice", f"Voice {voice.get('voice_number', i + 1)}")
+            voice_names.append(v_name)
 
         report = {
             "divisions": divisions,
+            "voices": voice_names,
             "measures": []
         }
 
