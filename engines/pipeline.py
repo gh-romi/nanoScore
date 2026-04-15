@@ -127,54 +127,81 @@ class TranscriptionPipeline:
         
         # Initialize project state tracking
         self._init_project_state(base_dir, project_name, voices_data)
+        self._update_global_state("is_aborted", 0)
         
         print(f"Started Automatic Pipeline for project: {project_name}")
-        
 
+        
+        # --- PRE-PHASE: PDF to Image Extraction ---
+        # We extract all PDFs for all voices first. This ensures that if the user aborts
+        # during the slow prediction phase, all images are already safely saved on disk.
+        print("\n--- Extracting Images from PDFs ---")
+        for idx, voice in enumerate(voices_data, start=1):
+            voice_folder_name = f"Voice_{idx:02d}"
+            
+            if self.state and self.state["voices"].get(voice_folder_name, {}).get("prediction_status", {}).get("page_images_saved") == 1:
+                continue
+                
+            voice_dir = base_dir / voice_folder_name
+            images_dir = voice_dir / "page_images"
+            images_dir.mkdir(parents=True, exist_ok=True)
+            
+            pdf_path = voice.get("pdf_path")
+            if not pdf_path or not os.path.exists(pdf_path):
+                print(f"Skipping PDF extraction for {voice_folder_name} - invalid or missing PDF path.")
+                continue
+                
+            print(f"Extracting images from {os.path.basename(pdf_path)} into {images_dir}...")
+            doc = fitz.open(pdf_path)
+            image_counter = 1
+            
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                image_list = page.get_images(full=True)
+                
+                for img_index, img in enumerate(image_list):
+                    xref = img[0]
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    image_ext = base_image["ext"]
+                    
+                    image_name = f"{image_counter:04d}.{image_ext}"
+                    image_path = images_dir / image_name
+                    
+                    with open(image_path, "wb") as f:
+                        f.write(image_bytes)
+                        
+                    image_counter += 1
+                    
+            self._update_voice_state(voice_folder_name, "prediction_status", "page_images_saved", 1)
+            
 
         # --- PHASE 1: Staff Detection & Cropping ---
         print("\n--- Starting Phase 1: Staff Detection & Cropping ---")
         if step_callback: step_callback(1)
         for idx, voice in enumerate(voices_data, start=1):
-            if voice_progress_callback: voice_progress_callback(idx - 1, "processing", 0, "?")
+
             voice_folder_name = f"Voice_{idx:02d}"
+
+            if self.state and self.state["voices"].get(voice_folder_name, {}).get("prediction_status", {}).get("staff_images_saved") == 1:
+                print(f"Skipping Phase 1 for {voice_folder_name} (already done)")
+                if voice_progress_callback: voice_progress_callback(idx - 1, "done", 1, 1)
+                continue
+                
+            if voice_progress_callback: voice_progress_callback(idx - 1, "processing", 0, "?")
+
             try:
                 voice_dir = base_dir / voice_folder_name
                 images_dir = voice_dir / "page_images"
                 staff_images_dir = voice_dir / "Staff_images"
                 
-                images_dir.mkdir(parents=True, exist_ok=True)
                 staff_images_dir.mkdir(parents=True, exist_ok=True)
                 
-                pdf_path = voice.get("pdf_path")
-                if not pdf_path or not os.path.exists(pdf_path):
-                    print(f"Skipping {voice_folder_name} - invalid or missing PDF path.")
+                if not images_dir.exists() or not any(images_dir.iterdir()):
+                    print(f"No extracted images found for {voice_folder_name}. Skipping Phase 1.")
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+                    if voice_progress_callback: voice_progress_callback(idx - 1, "error", 0, 0)
                     continue
-                    
-                # 1. PDF to JPG Extraction
-                print(f"Extracting images from {os.path.basename(pdf_path)} into {images_dir}...")
-                doc = fitz.open(pdf_path)
-                image_counter = 1
-                
-                for page_num in range(len(doc)):
-                    page = doc[page_num]
-                    image_list = page.get_images(full=True)
-                    
-                    for img_index, img in enumerate(image_list):
-                        xref = img[0]
-                        base_image = doc.extract_image(xref)
-                        image_bytes = base_image["image"]
-                        image_ext = base_image["ext"]
-                        
-                        image_name = f"{image_counter:04d}.{image_ext}"
-                        image_path = images_dir / image_name
-                        
-                        with open(image_path, "wb") as f:
-                            f.write(image_bytes)
-                            
-                        image_counter += 1
-                        
-                self._update_voice_state(voice_folder_name, "prediction_status", "page_images_saved", 1)
                 
                 # 2. Predict Staves
                 print(f"Starting staff prediction for {voice_folder_name}...")
@@ -264,7 +291,7 @@ class TranscriptionPipeline:
                 voice_json_data = {
                     "voice_number": idx,
                     "voice": voice.get("name", voice_folder_name),
-                    "pdf_path": pdf_path, # Keeping this property as it's useful for state management
+                    "pdf_path": voice.get("pdf_path", ""), # Will be empty if resumed, but images are already safe!
                     "pages": pages_data
                 }
                 
@@ -287,6 +314,12 @@ class TranscriptionPipeline:
         if step_callback: step_callback(2)
         for idx, voice in enumerate(voices_data, start=1):
             voice_folder_name = f"Voice_{idx:02d}"
+            
+            if self.state and self.state["voices"].get(voice_folder_name, {}).get("prediction_status", {}).get("notes_prediction") == 1:
+                print(f"Skipping Phase 2 for {voice_folder_name} (already done)")
+                if voice_progress_callback: voice_progress_callback(idx - 1, "done", 1, 1)
+                continue
+                
             try:
                 if voice_progress_callback: voice_progress_callback(idx - 1, "processing", 0, "?")
                 voice_dir = base_dir / voice_folder_name
@@ -294,18 +327,19 @@ class TranscriptionPipeline:
                 json_path = voice_dir / f"{voice_folder_name}_data.json"
                 
                 if not staff_images_dir.exists() or not any(staff_images_dir.iterdir()):
+                    print(f"No staff images found for {voice_folder_name}. Skipping Phase 2.")
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+                    if voice_progress_callback: voice_progress_callback(idx - 1, "error", 0, 0)
                     continue
                     
                 print(f"Starting notes prediction for {voice_folder_name}...")
                 
-                # TODO: DELETE save=True (used for testing output right now)
                 results = self.notes_engine.predict_notes(
                     input_folder=str(staff_images_dir),
                     #save=True, 
                     name=f"{project_name}_{voice_folder_name}_notes",
                     progress_callback=(lambda c, t, i=idx: voice_progress_callback(i - 1, "processing", c, t)) if voice_progress_callback else None
                 )
-                self._update_voice_state(voice_folder_name, "prediction_status", "notes_prediction", 1)
                 
                 # Load JSON to dynamically update
                 with open(json_path, "r", encoding="utf-8") as f:
@@ -354,6 +388,7 @@ class TranscriptionPipeline:
                     json.dump(voice_json_data, f, indent=4)
                     
                 print(f"Successfully updated JSON with notes for {voice_folder_name} at {json_path}")
+                self._update_voice_state(voice_folder_name, "prediction_status", "notes_prediction", 1)
                 if voice_progress_callback: voice_progress_callback(idx - 1, "done", len(results), len(results))
             except Exception as e:
                 print(f"Error in Phase 2 for {voice_folder_name}: {e}")
@@ -371,6 +406,12 @@ class TranscriptionPipeline:
         if step_callback: step_callback(3)
         for idx, voice in enumerate(voices_data, start=1):
             voice_folder_name = f"Voice_{idx:02d}"
+            
+            if self.state and self.state["voices"].get(voice_folder_name, {}).get("prediction_status", {}).get("position_classification") == 1:
+                print(f"Skipping Phase 3 for {voice_folder_name} (already done)")
+                if voice_progress_callback: voice_progress_callback(idx - 1, "done", 1, 1)
+                continue
+                
             try:
                 if voice_progress_callback: voice_progress_callback(idx - 1, "processing", 0, "?")
                 voice_dir = base_dir / voice_folder_name
@@ -378,6 +419,9 @@ class TranscriptionPipeline:
                 json_path = voice_dir / f"{voice_folder_name}_data.json"
                 
                 if not json_path.exists():
+                    print(f"No JSON data found for {voice_folder_name}. Skipping Phase 3.")
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+                    if voice_progress_callback: voice_progress_callback(idx - 1, "error", 0, 0)
                     continue
                     
                 symbol_crops_dir.mkdir(parents=True, exist_ok=True)
@@ -447,6 +491,9 @@ class TranscriptionPipeline:
                 self._update_voice_state(voice_folder_name, "prediction_status", "notes_images_saved", 1)
 
                 if not any(symbol_crops_dir.iterdir()):
+                    print(f"No symbol crops found for {voice_folder_name}. Skipping Phase 3.")
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+                    if voice_progress_callback: voice_progress_callback(idx - 1, "error", 0, 0)
                     continue
                     
                 print(f"Starting position classification for {voice_folder_name}...")
@@ -509,12 +556,19 @@ class TranscriptionPipeline:
         
         for idx, voice in enumerate(voices_data, start=1):
             voice_folder_name = f"Voice_{idx:02d}"
+            
+            if self.state and self.state["voices"].get(voice_folder_name, {}).get("score_reconstruction", {}).get("agnostic_to_partially_semantic") == 1:
+                print(f"Skipping Phase 4 for {voice_folder_name} (already done)")
+                continue
+                
             try:
                 voice_dir = base_dir / voice_folder_name
                 json_path = voice_dir / f"{voice_folder_name}_data.json"
                 out_json_path = voice_dir / f"{voice_folder_name}_partially_semantic_data.json"
                 
                 if not json_path.exists():
+                    print(f"No JSON data found for {voice_folder_name}. Skipping Phase 4.")
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
                     continue
                     
                 print(f"Generating partially semantic data for {voice_folder_name}...")
@@ -574,6 +628,12 @@ class TranscriptionPipeline:
             # 3. Process each voice using the global coloration flag
             all_fully_semantic_data = []
             for voice_folder_name, partially_semantic_data, out_json_path in all_partially_semantic_data:
+                if self.state and self.state["voices"].get(voice_folder_name, {}).get("score_reconstruction", {}).get("partially_semantic_to_semantic") == 1:
+                    print(f"Loading existing semantic data for {voice_folder_name}...")
+                    with open(out_json_path, "r", encoding="utf-8") as f:
+                        all_fully_semantic_data.append(json.load(f))
+                    continue
+                    
                 try:
                     print(f"Generating fully semantic data for {voice_folder_name}...")
                     

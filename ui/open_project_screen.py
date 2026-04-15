@@ -317,7 +317,7 @@ class OpenProjectScreen(QWidget):
         row_widget.delete_requested.connect(self.handle_delete_project)
         
         list_item = QListWidgetItem(self.project_list)
-        list_item.setSizeHint(QSize(700, 75)) # 75px height allows nice spacing
+        list_item.setSizeHint(QSize(100, 75)) # 100px width allows it to shrink automatically when scrollbar appears
         
         self.project_list.addItem(list_item)
         self.project_list.setItemWidget(list_item, row_widget)

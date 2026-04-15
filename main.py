@@ -1,5 +1,6 @@
 import sys
 import shutil
+import json
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QFileDialog
 from PyQt6.QtCore import QTimer
@@ -58,6 +59,7 @@ class MasterWindow(QMainWindow):
         self.project_info.go_back_requested.connect(self.on_go_to_open_project)
         self.project_info.validation_requested.connect(self.on_open_validation_from_info)
         self.project_info.export_requested.connect(self.on_export_requested)
+        self.project_info.resume_requested.connect(self.on_resume_transcription)
         
         # --- THE MAGIC HAPPENS HERE ---
         # Catch the emission from CreateProjectScreen to pass data & swap views
@@ -82,6 +84,21 @@ class MasterWindow(QMainWindow):
         self.current_project_name = project_name
         self.stacked_widget.setCurrentWidget(self.validation_screen)
         QTimer.singleShot(100, lambda: self.validation_screen.load_project_results(project_name, show_popup=False))
+
+    def on_resume_transcription(self, project_name):
+        state_path = Path("Projects") / project_name / "project_state.json"
+        voices_data = []
+        if state_path.exists():
+            with open(state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            
+            # Reconstruct voices_data using the saved metadata
+            voices_dict = state.get("voices", {})
+            for v_folder in sorted(voices_dict.keys()):
+                v_name = voices_dict[v_folder].get("metadata", {}).get("voice_name", v_folder)
+                voices_data.append({"name": v_name})
+                
+        self.on_start_transcription(project_name, voices_data)
 
     def on_transcription_finished(self, project_name):
         self.current_project_name = project_name

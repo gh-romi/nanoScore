@@ -358,7 +358,7 @@ class TranscriptionProgressScreen(QWidget):
         content_layout.addWidget(self.voice_list, 0, Qt.AlignmentFlag.AlignHCenter)
         content_layout.addStretch(1) 
         main_layout.addWidget(content_widget, 1)
-        self.set_current_step(2)
+        self.set_current_step(1)
 
     def start_transcription(self, project_name, voices_data):
         self.current_project_name = project_name

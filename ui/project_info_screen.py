@@ -183,7 +183,8 @@ class ProjectInfoScreen(QWidget):
 
         # --- LEFT COLUMN (Info) ---
         left_col = QWidget()
-        #left_col.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        left_col.setMinimumWidth(1)
+        left_col.setMaximumWidth(500) # 540  #Locks it to exactly half the container width
         left_layout = QVBoxLayout(left_col)
         left_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         left_layout.setSpacing(25)
@@ -191,6 +192,7 @@ class ProjectInfoScreen(QWidget):
         self.project_name_lbl = QLabel("<Project name>")
         self.project_name_lbl.setStyleSheet("color: #026BBC; font-size: 32px; font-weight: bold;")
         self.project_name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.project_name_lbl.setMinimumWidth(1) # Allows the label to shrink and wrap instead of pushing
 
         self.project_name_lbl.setWordWrap(True)
         left_layout.addWidget(self.project_name_lbl)
@@ -210,6 +212,8 @@ class ProjectInfoScreen(QWidget):
 
         # --- RIGHT COLUMN (Status) ---
         right_col = QWidget()
+        right_col.setMinimumWidth(1)
+        right_col.setMaximumWidth(500) # 540  # Keeps the right column symmetrically locked
         right_layout = QVBoxLayout(right_col)
         right_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         right_layout.setSpacing(15)
@@ -397,7 +401,10 @@ class ProjectInfoScreen(QWidget):
         }
         """
         self.current_project = project_data["name"]
-        self.project_name_lbl.setText(project_data["name"])
+        
+        # Inject zero-width spaces after underscores and dashes so long unbroken names wrap properly
+        breakable_name = project_data["name"].replace("_", "_\u200B").replace("-", "-\u200B")
+        self.project_name_lbl.setText(breakable_name)
 
         # Format metadata with Rich Text
         def format_meta(label, value):
