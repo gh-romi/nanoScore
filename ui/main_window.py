@@ -110,6 +110,7 @@ class SvgHoverButton(QPushButton):
 class MainMenuScreen(QWidget):
     # signal tells the Master Window to switch screens
     go_to_create_project = pyqtSignal() 
+    go_to_open_project = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -183,6 +184,9 @@ class MainMenuScreen(QWidget):
             }
             QPushButton:hover { background-color: #E6F0FA; }
         """)
+
+
+        open_btn.clicked.connect(self.go_to_open_project.emit)
 
         body_layout.addWidget(create_btn)
         body_layout.addWidget(open_btn)

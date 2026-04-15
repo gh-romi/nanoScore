@@ -8,6 +8,8 @@ from ui.main_window import MainMenuScreen
 from ui.create_new_project import CreateProjectScreen
 from ui.transcription_progress_screen import TranscriptionProgressScreen
 from ui.validation_results_screen import ValidationResultsScreen
+from ui.open_project_screen import OpenProjectScreen
+from ui.project_info_screen import ProjectInfoScreen
 
 class MasterWindow(QMainWindow):
     """Central application controller that manages view routing and data passing."""
@@ -24,17 +26,22 @@ class MasterWindow(QMainWindow):
         self.create_project = CreateProjectScreen()
         self.progress_screen = TranscriptionProgressScreen()
         self.validation_screen = ValidationResultsScreen()
+        self.open_project = OpenProjectScreen()
+        self.project_info = ProjectInfoScreen()
         
         # 2. Add screens to the Stacked Widget
         self.stacked_widget.addWidget(self.main_menu)
         self.stacked_widget.addWidget(self.create_project)
         self.stacked_widget.addWidget(self.progress_screen)
         self.stacked_widget.addWidget(self.validation_screen)
+        self.stacked_widget.addWidget(self.open_project)
+        self.stacked_widget.addWidget(self.project_info)
         
         # 3. Connect basic navigation signals
         self.main_menu.go_to_create_project.connect(
             lambda: self.stacked_widget.setCurrentWidget(self.create_project)
         )
+        self.main_menu.go_to_open_project.connect(self.on_go_to_open_project)
         self.create_project.go_back_requested.connect(
             lambda: self.stacked_widget.setCurrentWidget(self.main_menu)
         )
@@ -44,6 +51,13 @@ class MasterWindow(QMainWindow):
         self.validation_screen.exit_requested.connect(
             lambda: self.stacked_widget.setCurrentWidget(self.main_menu)
         )
+        self.open_project.go_back_requested.connect(
+            lambda: self.stacked_widget.setCurrentWidget(self.main_menu)
+        )
+        self.open_project.open_project_requested.connect(self.on_open_project_info)
+        self.project_info.go_back_requested.connect(self.on_go_to_open_project)
+        self.project_info.validation_requested.connect(self.on_open_validation_from_info)
+        self.project_info.export_requested.connect(self.on_export_requested)
         
         # --- THE MAGIC HAPPENS HERE ---
         # Catch the emission from CreateProjectScreen to pass data & swap views
@@ -54,6 +68,20 @@ class MasterWindow(QMainWindow):
     def on_start_transcription(self, project_name, voices_data):
         self.stacked_widget.setCurrentWidget(self.progress_screen)
         self.progress_screen.start_transcription(project_name, voices_data)
+        
+    def on_go_to_open_project(self):
+        self.stacked_widget.setCurrentWidget(self.open_project)
+        self.open_project.load_projects()
+        
+    def on_open_project_info(self, project_name):
+        self.current_project_name = project_name
+        self.project_info.load_project_from_name(project_name)
+        self.stacked_widget.setCurrentWidget(self.project_info)
+        
+    def on_open_validation_from_info(self, project_name):
+        self.current_project_name = project_name
+        self.stacked_widget.setCurrentWidget(self.validation_screen)
+        QTimer.singleShot(100, lambda: self.validation_screen.load_project_results(project_name, show_popup=False))
 
     def on_transcription_finished(self, project_name):
         self.current_project_name = project_name

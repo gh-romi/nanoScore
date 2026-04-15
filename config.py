@@ -1,3 +1,3 @@
 # config.py
 APP_NAME = "nanoScore"
-APP_VERSION = "0.0.7"
+APP_VERSION = "0.0.8"

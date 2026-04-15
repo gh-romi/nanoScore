@@ -248,6 +248,7 @@ class MismatchRowWidget(QWidget):
         layout.addWidget(self.box)
 
 
+
 class ValidationResultsScreen(QWidget):
     exit_requested = pyqtSignal()
     export_requested = pyqtSignal()
@@ -410,7 +411,7 @@ class ValidationResultsScreen(QWidget):
             self.mismatch_list.addItem(list_item)
             self.mismatch_list.setItemWidget(list_item, row_widget)
 
-    def load_project_results(self, project_name):
+    def load_project_results(self, project_name, show_popup=True):
         base_dir = Path("Projects") / project_name
         val_path = base_dir / f"{project_name}_validation.json"
         xml_path = base_dir / f"{project_name}.musicxml"
@@ -423,7 +424,7 @@ class ValidationResultsScreen(QWidget):
         else:
             self.load_validation_data(0, 0, [])
 
-        if xml_path.exists():
+        if show_popup and xml_path.exists():
             popup = FileSavedPopup(file_name=xml_path.name, project_path=str(base_dir.absolute()), parent=self)
             popup.exec()
 
