@@ -245,6 +245,7 @@ class CreateProjectScreen(QWidget):
     # This signal tells the Master Window to go back
     go_back_requested = pyqtSignal()
     start_transcription_requested = pyqtSignal(str, list)
+    start_semiautomatic_requested = pyqtSignal(str, list)
 
     def __init__(self):
         super().__init__()
@@ -482,6 +483,7 @@ class CreateProjectScreen(QWidget):
                 background-color: #E6F0FA; 
             }
         """)
+        semi_btn.clicked.connect(self.start_semiautomatic_transcription)
 
         content_layout.addWidget(auto_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         content_layout.addSpacing(10)
@@ -556,6 +558,12 @@ class CreateProjectScreen(QWidget):
         self.voice_list.setMinimumHeight(min(total_needed_height, 70 * 2)) 
         
     def start_automatic_transcription(self):
+        self._start_transcription("auto")
+        
+    def start_semiautomatic_transcription(self):
+        self._start_transcription("semi")
+
+    def _start_transcription(self, mode):
         project_name = self.project_name_input.text().strip()
         project_name = project_name.rstrip(' .')
         
@@ -639,7 +647,10 @@ class CreateProjectScreen(QWidget):
                     "pdf_path": widget.file_path
                 })
                 
-        self.start_transcription_requested.emit(project_name, voices_data)
+        if mode == "auto":
+            self.start_transcription_requested.emit(project_name, voices_data)
+        elif mode == "semi":
+            self.start_semiautomatic_requested.emit(project_name, voices_data)
 
     def show_project_name_error(self, message):
         # Change input styling to a red alert state

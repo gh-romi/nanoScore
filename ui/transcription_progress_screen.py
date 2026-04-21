@@ -233,6 +233,8 @@ class VoiceProgressRowWidget(QWidget):
 class TranscriptionProgressScreen(QWidget):
     cancel_transcription_requested = pyqtSignal()
     transcription_finished = pyqtSignal(str)
+    semiautomatic_ready = pyqtSignal(str)
+    semiautomatic_phase2_ready = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -360,14 +362,16 @@ class TranscriptionProgressScreen(QWidget):
         main_layout.addWidget(content_widget, 1)
         self.set_current_step(1)
 
-    def start_transcription(self, project_name, voices_data):
+    def start_transcription(self, project_name, voices_data, mode="auto"):
         self.current_project_name = project_name
+        self.mode = mode
         self.populate_voices(voices_data)
         
-        self.worker = TranscriptionWorker(project_name, voices_data)
+        self.worker = TranscriptionWorker(project_name, voices_data, mode)
         self.worker.step_changed.connect(self.on_step_changed)
         self.worker.voice_progress.connect(self.on_voice_progress)
         self.worker.general_progress.connect(self.on_general_progress)
+        self.worker.single_voice_finished.connect(self.on_single_voice_finished)
         self.worker.finished_success.connect(self.on_finished)
         self.worker.start()
 
@@ -476,12 +480,27 @@ class TranscriptionProgressScreen(QWidget):
             # Emits the signal if the user clicks "Yes, Cancel"
             self.cancel_transcription_requested.emit()
             
+    def force_cancel(self):
+        """Silently aborts the background worker without a popup."""
+        if self.worker and self.worker.isRunning():
+            self.worker.set_aborted()
+            self.worker.terminate()
+            self.worker.wait()
+
     def on_step_changed(self, step_num):
         self.set_current_step(step_num)
 
+    def on_single_voice_finished(self, voice_idx):
+        # As soon as Voice 1 is done in semiautomatic mode, transition to validation screen!
+        if self.mode == "semi" and voice_idx == 1:
+            self.semiautomatic_ready.emit(self.current_project_name)
+        elif self.mode == "semi2" and voice_idx == 1:
+            self.semiautomatic_phase2_ready.emit(self.current_project_name)
+
     def on_finished(self):
-        if hasattr(self, 'current_project_name'):
-            self.transcription_finished.emit(self.current_project_name)
+        if self.mode in ["auto", "semi3"]:
+            if hasattr(self, 'current_project_name'):
+                self.transcription_finished.emit(self.current_project_name)
 
     def simulate_mock_state_for_testing(self):
         if self.voice_list.count() >= 4:
@@ -496,22 +515,52 @@ class TranscriptionWorker(QThread):
     step_changed = pyqtSignal(int)
     voice_progress = pyqtSignal(int, str, object, object) 
     general_progress = pyqtSignal(str, str, int, int)
+    single_voice_finished = pyqtSignal(int)
     finished_success = pyqtSignal()
 
-    def __init__(self, project_name, voices_data):
+    def __init__(self, project_name, voices_data, mode="auto"):
         super().__init__()
         self.project_name = project_name
         self.voices_data = voices_data
+        self.mode = mode
 
     def run(self):
         pipeline = TranscriptionPipeline()
-        pipeline.run_automatic_pipeline(
-            self.project_name, 
-            self.voices_data,
-            step_callback=self.step_changed.emit,
-            voice_progress_callback=self.voice_progress.emit,
-            general_progress_callback=self.general_progress.emit
-        )
+        if self.mode == "auto":
+            pipeline.run_automatic_pipeline(
+                self.project_name, 
+                self.voices_data,
+                step_callback=self.step_changed.emit,
+                voice_progress_callback=self.voice_progress.emit,
+                general_progress_callback=self.general_progress.emit
+            )
+        elif self.mode == "semi":
+            # Signal UI we are on step 1
+            self.step_changed.emit(1)
+            pipeline.run_semiautomatic_phase1(
+                self.project_name,
+                self.voices_data,
+                voice_progress_callback=self.voice_progress.emit,
+                single_voice_finished_callback=self.single_voice_finished.emit
+            )
+        elif self.mode == "semi2":
+            self.step_changed.emit(2) # Highlights "Symbols detection" step
+            pipeline.run_semiautomatic_phase2(
+                self.project_name,
+                self.voices_data,
+                voice_progress_callback=self.voice_progress.emit,
+                single_voice_finished_callback=self.single_voice_finished.emit,
+                step_callback=self.step_changed.emit
+            )
+        elif self.mode == "semi3":
+            self.step_changed.emit(4) # Highlights "Score reconstruction" step
+            pipeline.run_semiautomatic_phase3(
+                self.project_name,
+                self.voices_data,
+                step_callback=self.step_changed.emit,
+                general_progress_callback=self.general_progress.emit
+            )
+            
         self.finished_success.emit()
         
     def set_aborted(self):

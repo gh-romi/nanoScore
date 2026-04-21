@@ -275,7 +275,7 @@ class TranscriptionPipeline:
                                 "staff_image_height": crop_h,
                                 "staff_confidence": round(conf, 4),
                                 "staff_box_absolute_xyxy": [round(c, 2) for c in xyxy],
-                                "staff_box_relative_xywh": [round(c, 4) for c in xywhn],
+                                "staff_box_relative_xywh": [round(c, 6) for c in xywhn],
                                 "symbols": [] # Placeholder for next steps in the pipeline
                             })
                     
@@ -375,7 +375,7 @@ class TranscriptionPipeline:
                                     "class_name": cls_name,
                                     "class_confidence": round(conf, 4),
                                     "symbol_box_absolute_xyxy": [round(c, 2) for c in xyxy],
-                                    "symbol_box_relative_xywh": [round(c, 4) for c in xywhn],
+                                    "symbol_box_relative_xywh": [round(c, 6) for c in xywhn],
                                     "position_type": None,
                                     "position_number": None,
                                     "position_confidence": None
@@ -401,7 +401,7 @@ class TranscriptionPipeline:
         print("\n--- Starting Phase 3: Position Classification ---")
         TARGET_CLASSES = [0, 2, 5, 7, 8, 15, 16, 17, 18, 19, 20, 21, 22]
         BASE_CROP_WIDTH = 80
-        F_CLEF_WIDTH = 95  # 50 + 15px
+        F_CLEF_WIDTH = 95  # 80 + 15px
         
         if step_callback: step_callback(3)
         for idx, voice in enumerate(voices_data, start=1):
@@ -709,6 +709,560 @@ class TranscriptionPipeline:
             except Exception as e:
                 print(f"Error generating synchronized MusicXML: {e}")
 
+
+        # --- PHASE 7: Duration Validation ---
+        print("\n--- Starting Phase 7: Duration Validation ---")
+        if final_score_data:
+            try:
+                val_out_path = base_dir / f"{project_name}_validation.json"
+                print(f"Generating measure duration validation report...")
+                data_engine.generate_duration_validation(final_score_data, str(val_out_path))
+                print(f"Successfully created validation report at {val_out_path}")
+                self._update_global_state("measure_duration_validation_finished", 1)
+            except Exception as e:
+                print(f"Error generating validation report: {e}")
+        if general_progress_callback: general_progress_callback("Processing and saving MusicXML files", "done", 1, 1)
+
+    def run_semiautomatic_phase1(self, project_name: str, voices_data: list, voice_progress_callback=None, single_voice_finished_callback=None):
+        """
+        Executes ONLY Phase 1 (Staff Detection) sequentially.
+        Emits `single_voice_finished_callback(voice_idx)` the moment each voice finishes
+        so the UI can transition or unlock tabs dynamically.
+        """
+        # Fallback if the user left the project name empty
+        if not project_name.strip():
+            i = 1
+            while True:
+                candidate = f"Project_{i:04d}"
+                if not (Path("Projects") / candidate).exists():
+                    project_name = candidate
+                    break
+                i += 1
+                
+        base_dir = Path("Projects") / project_name
+        base_dir.mkdir(parents=True, exist_ok=True)
+        
+        self._init_project_state(base_dir, project_name, voices_data)
+        self._update_global_state("is_aborted", 0)
+        
+        print(f"Started Semiautomatic Phase 1 for project: {project_name}")
+
+        for idx, voice in enumerate(voices_data, start=1):
+            voice_folder_name = f"Voice_{idx:02d}"
+            voice_dir = base_dir / voice_folder_name
+            images_dir = voice_dir / "page_images"
+            staff_images_dir = voice_dir / "Staff_images"
+            
+            # 1. Extract PDFs
+            if self.state and self.state["voices"].get(voice_folder_name, {}).get("prediction_status", {}).get("page_images_saved") != 1:
+                images_dir.mkdir(parents=True, exist_ok=True)
+                pdf_path = voice.get("pdf_path")
+                if pdf_path and os.path.exists(pdf_path):
+                    print(f"Extracting images from {os.path.basename(pdf_path)} into {images_dir}...")
+                    doc = fitz.open(pdf_path)
+                    image_counter = 1
+                    for page_num in range(len(doc)):
+                        page = doc[page_num]
+                        for img_index, img in enumerate(page.get_images(full=True)):
+                            xref = img[0]
+                            base_image = doc.extract_image(xref)
+                            with open(images_dir / f"{image_counter:04d}.{base_image['ext']}", "wb") as f:
+                                f.write(base_image["image"])
+                            image_counter += 1
+                    self._update_voice_state(voice_folder_name, "prediction_status", "page_images_saved", 1)
+
+            # 2. Predict Staves (Cropping is deferred until after validation)
+            if self.state and self.state["voices"].get(voice_folder_name, {}).get("prediction_status", {}).get("staff_prediction") != 1:
+                if voice_progress_callback: voice_progress_callback(idx - 1, "processing", 0, "?")
+                
+                try:
+                    if images_dir.exists() and any(images_dir.iterdir()):
+                        print(f"Starting staff prediction for {voice_folder_name}...")
+                        results = self.staff_engine.predict_staff(
+                            input_folder=str(images_dir),
+                            name=f"{project_name}_{voice_folder_name}_staves",
+                            progress_callback=(lambda c, t, i=idx: voice_progress_callback(i - 1, "processing", c, t)) if voice_progress_callback else None
+                        )
+                        
+                        pages_data = []
+                        
+                        for page_idx, result in enumerate(results, start=1):
+                            image_name = os.path.basename(result.path)
+                            img_h, img_w = result.orig_shape
+                            
+                            staves_data = []
+                            if result.boxes:
+                                sorted_boxes = sorted(result.boxes, key=lambda b: (b.xywhn[0][1].item(), b.xywhn[0][0].item()))
+                                for staff_idx, box in enumerate(sorted_boxes):
+                                    xyxy = box.xyxy[0].tolist()
+                                    xywhn = box.xywhn[0].tolist()
+                                    conf = box.conf[0].item()
+                                    
+                                    staves_data.append({
+                                        "staff_number": staff_idx,
+                                        "staff_image_path": "",
+                                        "staff_image_width": 0,
+                                        "staff_image_height": 0,
+                                        "staff_confidence": round(conf, 4),
+                                        "staff_box_absolute_xyxy": [round(c, 2) for c in xyxy],
+                                        "staff_box_relative_xywh": [round(c, 6) for c in xywhn],
+                                        "symbols": []
+                                    })
+                            
+                            pages_data.append({
+                                "page_id": page_idx,
+                                "page_image_path": (images_dir / image_name).as_posix(),
+                                "image_width": img_w,
+                                "image_height": img_h,
+                                "staves": staves_data
+                            })
+                            
+                        voice_json_data = {
+                            "voice_number": idx,
+                            "voice": voice.get("name", voice_folder_name),
+                            "pdf_path": voice.get("pdf_path", ""),
+                            "pages": pages_data
+                        }
+                        
+                        json_path = voice_dir / f"{voice_folder_name}_data.json"
+                        with open(json_path, "w", encoding="utf-8") as json_file:
+                            json.dump(voice_json_data, json_file, indent=4)
+                            
+                        self._update_voice_state(voice_folder_name, "prediction_status", "staff_prediction", 1)
+                        if voice_progress_callback: voice_progress_callback(idx - 1, "done", len(results), len(results))
+                except Exception as e:
+                    print(f"Error in Phase 1 for {voice_folder_name}: {e}")
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+                    if voice_progress_callback: voice_progress_callback(idx - 1, "error", 0, 0)
+            
+            # --- NOTIFY UI THAT THIS SPECIFIC VOICE IS READY ---
+            if single_voice_finished_callback:
+                single_voice_finished_callback(idx) # Passes voice_number (1-indexed)
+
+    def run_semiautomatic_phase2(self, project_name: str, voices_data: list, voice_progress_callback=None, single_voice_finished_callback=None, step_callback=None):
+        """
+        Executes Phase 2 (Cropping Validated Staves, Notes Detection, Position Classification) sequentially.
+        Emits `single_voice_finished_callback(voice_idx)` the moment each voice finishes.
+        """
+        base_dir = Path("Projects") / project_name
+        self.state_path = base_dir / "project_state.json"
+        
+        if not self.state_path.exists():
+            print("Project state not found. Aborting Phase 2.")
+            return
+
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            self.state = json.load(f)
+            
+        print(f"Started Semiautomatic Phase 2 for project: {project_name}")
+
+        for idx, voice in enumerate(voices_data, start=1):
+            voice_folder_name = f"Voice_{idx:02d}"
+            voice_dir = base_dir / voice_folder_name
+            staff_images_dir = voice_dir / "Staff_images"
+            json_path = voice_dir / f"{voice_folder_name}_data.json"
+            
+            if not json_path.exists():
+                print(f"JSON data missing for {voice_folder_name}. Skipping.")
+                continue
+
+            # --- 1. Crop Validated Staves ---
+            if self.state["voices"][voice_folder_name]["prediction_status"].get("staff_images_saved") != 1:
+                if voice_progress_callback: voice_progress_callback(idx - 1, "processing", 0, "?")
+                try:
+                    staff_images_dir.mkdir(parents=True, exist_ok=True)
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        voice_json_data = json.load(f)
+                    
+                    EXPAND_W, EXPAND_H = 0.05, 0.50
+                    
+                    for page in voice_json_data.get("pages", []):
+                        img_path = str(Path(page["page_image_path"]))
+                        img = cv2.imread(img_path)
+                        if img is None:
+                            print(f"Warning: Could not read {img_path}")
+                            continue
+                            
+                        img_h, img_w = page.get("image_height"), page.get("image_width")
+                        
+                        for staff in page.get("staves", []):
+                            x_c_norm, y_c_norm, w_norm, h_norm = staff["staff_box_relative_xywh"]
+                            new_w_norm = w_norm * (1 + EXPAND_W)
+                            new_h_norm = h_norm * (1 + EXPAND_H)
+                            
+                            x1 = max(0, int((x_c_norm - new_w_norm / 2) * img_w))
+                            y1 = max(0, int((y_c_norm - new_h_norm / 2) * img_h))
+                            x2 = min(img_w, int((x_c_norm + new_w_norm / 2) * img_w))
+                            y2 = min(img_h, int((y_c_norm + new_h_norm / 2) * img_h))
+                            
+                            base_name = os.path.splitext(os.path.basename(img_path))[0]
+                            staff_img_name = f"{base_name}_staff_{staff['staff_number']}.jpg"
+                            staff_save_path = staff_images_dir / staff_img_name
+                            
+                            crop = img[y1:y2, x1:x2]
+                            if crop.size > 0:
+                                cv2.imwrite(str(staff_save_path), crop)
+                                crop_h, crop_w = crop.shape[:2]
+                            else:
+                                crop_h, crop_w = y2 - y1, x2 - x1
+                                
+                            staff["staff_image_path"] = staff_save_path.as_posix()
+                            staff["staff_image_width"] = crop_w
+                            staff["staff_image_height"] = crop_h
+                            
+                    with open(json_path, "w", encoding="utf-8") as f:
+                        json.dump(voice_json_data, f, indent=4)
+                        
+                    self._update_voice_state(voice_folder_name, "prediction_status", "staff_images_saved", 1)
+                except Exception as e:
+                    print(f"Error in Phase 2 Cropping for {voice_folder_name}: {e}")
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+                    if voice_progress_callback: voice_progress_callback(idx - 1, "error", 0, 0)
+                    continue
+
+            # --- 2. Predict Notes ---
+            if step_callback: step_callback(2)
+            if self.state["voices"][voice_folder_name]["prediction_status"].get("notes_prediction") != 1:
+                try:
+                    print(f"Starting notes prediction for {voice_folder_name}...")
+                    results = self.notes_engine.predict_notes(
+                        input_folder=str(staff_images_dir),
+                        name=f"{project_name}_{voice_folder_name}_notes",
+                        progress_callback=(lambda c, t, i=idx: voice_progress_callback(i - 1, "processing", c, t)) if voice_progress_callback else None
+                    )
+                    
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        voice_json_data = json.load(f)
+                        
+                    staff_dict_map = {}
+                    for page in voice_json_data["pages"]:
+                        for staff in page["staves"]:
+                            staff_dict_map[os.path.basename(staff["staff_image_path"])] = staff
+                            
+                    for result in results:
+                        img_basename = os.path.basename(result.path)
+                        if img_basename in staff_dict_map:
+                            staff_dict = staff_dict_map[img_basename]
+                            symbols_data = []
+                            if result.boxes:
+                                sorted_boxes = sorted(result.boxes, key=lambda b: (b.xywhn[0][0].item(), b.xywhn[0][1].item()))
+                                for sym_idx, box in enumerate(sorted_boxes):
+                                    xyxy = box.xyxy[0].tolist()
+                                    xywhn = box.xywhn[0].tolist()
+                                    conf = box.conf[0].item()
+                                    cls_id = int(box.cls[0].item())
+                                    cls_name = result.names[cls_id]
+                                    
+                                    symbols_data.append({
+                                        "symbol_number": sym_idx,
+                                        "class_id": cls_id,
+                                        "class_name": cls_name,
+                                        "class_confidence": round(conf, 4),
+                                        "symbol_box_absolute_xyxy": [round(c, 2) for c in xyxy],
+                                        "symbol_box_relative_xywh": [round(c, 6) for c in xywhn],
+                                        "position_type": None,
+                                        "position_number": None,
+                                        "position_confidence": None
+                                    })
+                            staff_dict["symbols"] = symbols_data
+                            
+                    with open(json_path, "w", encoding="utf-8") as f:
+                        json.dump(voice_json_data, f, indent=4)
+                        
+                    self._update_voice_state(voice_folder_name, "prediction_status", "notes_prediction", 1)
+                except Exception as e:
+                    print(f"Error in Phase 2 Notes for {voice_folder_name}: {e}")
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+                    if voice_progress_callback: voice_progress_callback(idx - 1, "error", 0, 0)
+                    continue
+
+            # --- 3. Position Classification ---
+            if step_callback: step_callback(3)
+            if self.state["voices"][voice_folder_name]["prediction_status"].get("position_classification") != 1:
+                try:
+                    symbol_crops_dir = voice_dir / "Symbol_crops"
+                    symbol_crops_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        voice_json_data = json.load(f)
+                        
+                    crop_to_symbol_map = {}
+                    TARGET_CLASSES = [0, 2, 5, 7, 8, 15, 16, 17, 18, 19, 20, 21, 22]
+                    BASE_CROP_WIDTH = 80
+                    F_CLEF_WIDTH = 95
+                    
+                    for page in voice_json_data.get("pages", []):
+                        for staff in page.get("staves", []):
+                            img_path = staff["staff_image_path"]
+                            img = cv2.imread(img_path)
+                            if img is None:
+                                continue
+                                
+                            img_h, img_w = img.shape[:2]
+                            
+                            for sym in staff.get("symbols", []):
+                                if sym["class_id"] not in TARGET_CLASSES:
+                                    continue
+                                    
+                                x_c_norm, y_c_norm, w_norm, h_norm = sym["symbol_box_relative_xywh"]
+                                x_c_pixel = int(x_c_norm * img_w)
+                                y_c_pixel = int(y_c_norm * img_h)
+                                box_w_pixel = int(w_norm * img_w)
+                                box_h_pixel = int(h_norm * img_h)
+                                
+                                temp_img = img.copy()
+                                box_x1 = x_c_pixel - (box_w_pixel // 2)
+                                box_y1 = y_c_pixel - (box_h_pixel // 2)
+                                box_x2 = x_c_pixel + (box_w_pixel // 2)
+                                box_y2 = y_c_pixel + (box_h_pixel // 2)
+                                cv2.rectangle(temp_img, (box_x1, box_y1), (box_x2, box_y2), (0, 0, 255), 2)
+                                
+                                crop_width = F_CLEF_WIDTH if sym["class_id"] == 8 else BASE_CROP_WIDTH
+                                y1 = 0
+                                y2 = img_h
+                                x1 = max(0, x_c_pixel - (crop_width // 2))
+                                x2 = min(img_w, x_c_pixel + (crop_width // 2))
+                                
+                                crop = temp_img[y1:y2, x1:x2]
+                                if crop.size == 0:
+                                    continue
+                                    
+                                h, w = crop.shape[:2]
+                                if h != w:
+                                    max_side = max(w, h)
+                                    top = (max_side - h) // 2
+                                    bottom = max_side - h - top
+                                    left = (max_side - w) // 2
+                                    right = max_side - w - left
+                                    crop = cv2.copyMakeBorder(crop, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+                                    
+                                staff_basename = os.path.splitext(os.path.basename(img_path))[0]
+                                crop_name = f"{staff_basename}_obj_{sym['symbol_number']:03d}.jpg"
+                                crop_path = symbol_crops_dir / crop_name
+                                
+                                cv2.imwrite(str(crop_path), crop)
+                                crop_to_symbol_map[crop_name] = sym
+                                
+                    self._update_voice_state(voice_folder_name, "prediction_status", "notes_images_saved", 1)
+
+                    if not any(symbol_crops_dir.iterdir()):
+                        self._update_voice_state(voice_folder_name, "prediction_status", "position_classification", 1)
+                    else:
+                        print(f"Starting position classification for {voice_folder_name}...")
+                        results = self.position_engine.classify_position(
+                            input_folder=str(symbol_crops_dir),
+                            name=f"{project_name}_{voice_folder_name}_positions",
+                            progress_callback=(lambda c, t, i=idx: voice_progress_callback(i - 1, "processing", c, t)) if voice_progress_callback else None
+                        )
+                        
+                        for result in results:
+                            img_basename = os.path.basename(result.path)
+                            if img_basename in crop_to_symbol_map:
+                                sym = crop_to_symbol_map[img_basename]
+                                
+                                top1_id = result.probs.top1
+                                top1_conf = result.probs.top1conf.item()
+                                class_name = result.names[top1_id]
+                                
+                                if class_name.startswith(("L", "S")) and len(class_name) > 1:
+                                    sym["position_type"] = class_name[0]
+                                    num_str = class_name[1:]
+                                    
+                                    if "_minus_" in num_str:
+                                        num_str = num_str.replace("_minus_", "-")
+                                    elif "minus_" in num_str:
+                                        num_str = num_str.replace("minus_", "-")
+                                        
+                                    try:
+                                        sym["position_number"] = int(num_str)
+                                    except ValueError:
+                                        sym["position_number"] = num_str
+                                else:
+                                    sym["position_type"] = class_name
+                                    sym["position_number"] = None
+                                    
+                                sym["position_confidence"] = round(top1_conf, 4)
+                                
+                        with open(json_path, "w", encoding="utf-8") as f:
+                            json.dump(voice_json_data, f, indent=4)
+                            
+                        self._update_voice_state(voice_folder_name, "prediction_status", "position_classification", 1)
+                        if voice_progress_callback: voice_progress_callback(idx - 1, "done", len(results), len(results))
+                except Exception as e:
+                    print(f"Error in Phase 3 Positions for {voice_folder_name}: {e}")
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+                    if voice_progress_callback: voice_progress_callback(idx - 1, "error", 0, 0)
+                    continue
+
+            # --- NOTIFY UI THAT THIS SPECIFIC VOICE IS READY ---
+            if single_voice_finished_callback:
+                single_voice_finished_callback(idx)
+
+    def run_semiautomatic_phase3(self, project_name: str, voices_data: list, step_callback=None, general_progress_callback=None):
+        """
+        Executes Phase 3 (Score Reconstruction: Phases 4-7 from automatic pipeline).
+        """
+        base_dir = Path("Projects") / project_name
+        self.state_path = base_dir / "project_state.json"
+        
+        if not self.state_path.exists():
+            print("Project state not found. Aborting Phase 3.")
+            return
+
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            self.state = json.load(f)
+            
+        print(f"Started Semiautomatic Phase 3 (Score Reconstruction) for project: {project_name}")
+        data_engine = DataProcessEngine()
+
+        # --- PHASE 4: Agnostic to Partially Semantic ---
+        print("\n--- Starting Phase 4: Agnostic to Partially Semantic ---")
+        if step_callback: step_callback(4)
+        if general_progress_callback: general_progress_callback("Processing and saving MusicXML files", "processing", 0, 1)
+        
+        for idx, voice in enumerate(voices_data, start=1):
+            voice_folder_name = f"Voice_{idx:02d}"
+            
+            if self.state and self.state["voices"].get(voice_folder_name, {}).get("score_reconstruction", {}).get("agnostic_to_partially_semantic") == 1:
+                print(f"Skipping Phase 4 for {voice_folder_name} (already done)")
+                continue
+                
+            try:
+                voice_dir = base_dir / voice_folder_name
+                json_path = voice_dir / f"{voice_folder_name}_data.json"
+                out_json_path = voice_dir / f"{voice_folder_name}_partially_semantic_data.json"
+                
+                if not json_path.exists():
+                    print(f"No JSON data found for {voice_folder_name}. Skipping Phase 4.")
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+                    continue
+                    
+                print(f"Generating partially semantic data for {voice_folder_name}...")
+                
+                with open(json_path, "r", encoding="utf-8") as f:
+                    agnostic_data = json.load(f)
+                    
+                partially_semantic_data = data_engine.process_agnostic_to_partially_semantic(agnostic_data)
+                
+                with open(out_json_path, "w", encoding="utf-8") as f:
+                    json.dump(partially_semantic_data, f, indent=4)
+                    
+                print(f"Successfully created partially semantic JSON for {voice_folder_name} at {out_json_path}")
+                self._update_voice_state(voice_folder_name, "score_reconstruction", "agnostic_to_partially_semantic", 1)
+            except Exception as e:
+                print(f"Error in Phase 4 for {voice_folder_name}: {e}")
+                self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+
+        # --- PHASE 5: Partially Semantic to Fully Semantic ---
+        print("\n--- Starting Phase 5: Partially Semantic to Fully Semantic ---")
+        
+        cheatsheet_path = Path("semantic_cheatsheet.json")
+        if not cheatsheet_path.exists():
+            print(f"Warning: Cannot find {cheatsheet_path} in the root directory. Phase 5 skipped.")
+        else:
+            with open(cheatsheet_path, "r", encoding="utf-8") as f:
+                cheatsheet = json.load(f)
+                
+            all_partially_semantic_data = []
+            for idx, voice in enumerate(voices_data, start=1):
+                voice_folder_name = f"Voice_{idx:02d}"
+                voice_dir = base_dir / voice_folder_name
+                in_json_path = voice_dir / f"{voice_folder_name}_partially_semantic_data.json"
+                out_json_path = voice_dir / f"{voice_folder_name}_semantic_data.json"
+                
+                if not in_json_path.exists():
+                    continue
+                    
+                with open(in_json_path, "r", encoding="utf-8") as f:
+                    partially_semantic_data = json.load(f)
+                
+                all_partially_semantic_data.append((voice_folder_name, partially_semantic_data, out_json_path))
+
+            global_requires_coloration = False
+            for _, p_data, _ in all_partially_semantic_data:
+                for p_measure in p_data.get("measures", []):
+                    for event in p_measure.get("events", []):
+                        if event.get("class_id") == 22:
+                            global_requires_coloration = True
+                            break
+                    if global_requires_coloration: break
+                if global_requires_coloration: break
+
+            all_fully_semantic_data = []
+            for voice_folder_name, partially_semantic_data, out_json_path in all_partially_semantic_data:
+                if self.state and self.state["voices"].get(voice_folder_name, {}).get("score_reconstruction", {}).get("partially_semantic_to_semantic") == 1:
+                    with open(out_json_path, "r", encoding="utf-8") as f:
+                        all_fully_semantic_data.append(json.load(f))
+                    continue
+                    
+                try:
+                    fully_semantic_data = data_engine.process_partially_semantic_to_semantic(
+                        partially_semantic_data, cheatsheet, global_requires_coloration
+                    )
+                    with open(out_json_path, "w", encoding="utf-8") as f:
+                        json.dump(fully_semantic_data, f, indent=4)
+                    all_fully_semantic_data.append(fully_semantic_data)
+                    self._update_voice_state(voice_folder_name, "score_reconstruction", "partially_semantic_to_semantic", 1)
+                except Exception as e:
+                    print(f"Error in Phase 5 for {voice_folder_name}: {e}")
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+
+        # --- PHASE 6: MusicXML Generation & Synchronization ---
+        print("\n--- Starting Phase 6: MusicXML Generation & Global Sync ---")
+        if not all_fully_semantic_data:
+            print("No valid semantic data found to generate MusicXML. Skipping Phase 6.")
+            return
+
+        final_score_data = all_fully_semantic_data
+
+        if len(all_fully_semantic_data) == 1:
+            # SINGLE VOICE PIPELINE
+            try:
+                v_num = all_fully_semantic_data[0].get("voice_number", 1)
+                voice_folder_name = f"Voice_{v_num:02d}"
+                voice_name = all_fully_semantic_data[0].get("voice", "Voice_1")
+                out_xml_path = base_dir / f"{project_name}.musicxml"
+                print(f"Generating MusicXML for single voice: {voice_name}...")
+                data_engine.generate_musicxml(all_fully_semantic_data, cheatsheet, str(out_xml_path), project_name)
+                print(f"Successfully created {out_xml_path}")
+                
+                self._update_voice_state(voice_folder_name, "score_reconstruction", "one_voice_musicxml_saved", 1)
+                self._update_global_state("combined_musicxml_saved", 1)
+            except Exception as e:
+                print(f"Error generating MusicXML for single voice: {e}")
+                if 'voice_folder_name' in locals():
+                    self._update_voice_state(voice_folder_name, "prediction_status", "has_error", 1)
+        else:
+            # MULTIPLE VOICES PIPELINE
+            try:
+                for v_data in all_fully_semantic_data:
+                    voice_name = v_data.get("voice", "Unknown_Voice")
+                    v_num = v_data.get("voice_number", 1)
+                    voice_folder_name = f"Voice_{v_num:02d}"
+                    out_xml_path = base_dir / f"{project_name}_{voice_name}.musicxml"
+                    print(f"Generating individual MusicXML for {voice_name}...")
+                    data_engine.generate_musicxml([v_data], cheatsheet, str(out_xml_path), project_name)
+                    self._update_voice_state(voice_folder_name, "score_reconstruction", "one_voice_musicxml_saved", 1)
+                    
+                print("\nSynchronizing global measures across all voices...")
+                synced_data = data_engine.sync_voices(all_fully_semantic_data)
+                final_score_data = synced_data
+                self._update_global_state("measure_synchronization_finished", 1)
+                
+                # Optional but recommended: Save the fully synchronized data back to JSON for user debugging
+                for idx, v_data in enumerate(synced_data, start=1):
+                    voice_folder_name = f"Voice_{idx:02d}"
+                    out_json_path = base_dir / voice_folder_name / f"{voice_folder_name}_semantic_data.json"
+                    with open(out_json_path, "w", encoding="utf-8") as f:
+                        json.dump(v_data, f, indent=4)
+                        
+                combined_xml_path = base_dir / f"{project_name}.musicxml"
+                print(f"Generating combined synchronized MusicXML...")
+                data_engine.generate_musicxml(synced_data, cheatsheet, str(combined_xml_path), project_name)
+                print(f"Successfully created master score at {combined_xml_path}")
+                self._update_global_state("combined_musicxml_saved", 1)
+            except Exception as e:
+                print(f"Error generating synchronized MusicXML: {e}")
 
         # --- PHASE 7: Duration Validation ---
         print("\n--- Starting Phase 7: Duration Validation ---")
