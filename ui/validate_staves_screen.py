@@ -428,6 +428,75 @@ class UnsavedChangesDialog(QDialog):
         layout.addWidget(bg_frame)
 
 
+class ProceedDialog(QDialog):
+    """A custom popup to confirm proceeding to the next phase."""
+    def __init__(self, parent=None, next_step_name="the next step"):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setModal(True)
+        self.setFixedSize(500, 220)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        bg_frame = QFrame()
+        bg_frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border-radius: 16px;
+                border: 1px solid #CCCCCC;
+            }
+        """)
+        bg_layout = QVBoxLayout(bg_frame)
+        bg_layout.setContentsMargins(30, 30, 30, 30)
+
+        title = QLabel("Proceed to next step")
+        title.setStyleSheet("color: #026BBC; font-size: 26px; font-weight: bold; border: none;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        desc = QLabel(f"Are you sure you want to proceed to {next_step_name}?\nMake sure you have saved all manual corrections.")
+        desc.setStyleSheet("color: #333333; font-size: 16px; border: none; margin-top: 10px;")
+        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(20)
+
+        stay_btn = QPushButton("Stay")
+        stay_btn.setFixedSize(140, 40)
+        stay_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        stay_btn.setStyleSheet("""
+            QPushButton {
+                background-color: white; color: #026BBC; font-weight: bold; 
+                border-radius: 8px; font-size: 16px; border: 2px solid #026BBC;
+            }
+            QPushButton:hover { background-color: #E6F0FA; }
+        """)
+        stay_btn.clicked.connect(self.reject) 
+
+        proceed_btn = QPushButton("Proceed")
+        proceed_btn.setFixedSize(140, 40)
+        proceed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        proceed_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #026BBC; color: white; font-weight: bold; border-radius: 8px; font-size: 16px;
+            }
+            QPushButton:hover { background-color: #005BB5; }
+        """)
+        proceed_btn.clicked.connect(self.accept) 
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(stay_btn)
+        btn_layout.addWidget(proceed_btn)
+        btn_layout.addStretch()
+
+        bg_layout.addWidget(title)
+        bg_layout.addWidget(desc)
+        bg_layout.addStretch()
+        bg_layout.addLayout(btn_layout)
+
+        layout.addWidget(bg_frame)
+
 
 class ShortcutsDialog(QDialog):
     """A popup displaying keyboard shortcuts."""
@@ -852,6 +921,7 @@ class ValidateStavesScreen(QWidget):
         self.current_page_index = 0 # Tracks the currently displayed page
         self.current_voice = ""     # Tracks the current voice
         self.project_path = ""      # Stores absolute path to current project folder
+        self.all_background_tasks_finished = False # Tracks if background prediction is done
 
         self.thumbnail_thread = None # Keeps track of our background worker
 
@@ -1144,10 +1214,20 @@ class ValidateStavesScreen(QWidget):
         self.exit_requested.emit()
 
     def attempt_forward(self):
-        if self.check_unsaved_changes():
-            if hasattr(self, 'poll_timer') and self.poll_timer.isActive():
-                self.poll_timer.stop()
-            self.forward_requested.emit()
+        if not self.all_background_tasks_finished:
+            self.toast.show_custom_message("Background predictions are still running. Please wait.")
+            return
+            
+        if not self.check_unsaved_changes():
+            return
+            
+        dialog = ProceedDialog(self, "symbols detection")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+            
+        if hasattr(self, 'poll_timer') and self.poll_timer.isActive():
+            self.poll_timer.stop()
+        self.forward_requested.emit()
 
     def load_voices_from_disk(self, project_path):
         self.project_path = project_path
@@ -1219,6 +1299,8 @@ class ValidateStavesScreen(QWidget):
             
         if all_done and hasattr(self, 'poll_timer') and self.poll_timer.isActive():
             self.poll_timer.stop()
+            
+        self.all_background_tasks_finished = all_done
 
     def populate_voice_tabs(self, voices_info):
         """Creates widgets for the found voices (Initial Load)."""
@@ -1502,6 +1584,31 @@ class ValidateStavesScreen(QWidget):
                 with open(json_file, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=4)
                     
+                # --- RESET DOWNSTREAM PIPELINE STATE ---
+                state_file = Path(self.project_path) / "project_state.json"
+                if state_file.exists():
+                    with open(state_file, "r", encoding="utf-8") as sf:
+                        state_data = json.load(sf)
+                        
+                    if folder_name in state_data.get("voices", {}):
+                        v_status = state_data["voices"][folder_name]["prediction_status"]
+                        v_status["staff_images_saved"] = 0
+                        v_status["notes_prediction"] = 0
+                        v_status["notes_images_saved"] = 0
+                        v_status["position_classification"] = 0
+                        
+                        s_recon = state_data["voices"][folder_name]["score_reconstruction"]
+                        s_recon["agnostic_to_partially_semantic"] = 0
+                        s_recon["partially_semantic_to_semantic"] = 0
+                        s_recon["one_voice_musicxml_saved"] = 0
+                        
+                        state_data["global_state"]["measure_synchronization_finished"] = 0
+                        state_data["global_state"]["combined_musicxml_saved"] = 0
+                        state_data["global_state"]["measure_duration_validation_finished"] = 0
+                        
+                    with open(state_file, "w", encoding="utf-8") as sf:
+                        json.dump(state_data, sf, indent=4)
+                        
                 self.toast.show_custom_message("Staff bounding boxes updated")
                 
                 # Clear undo stack so buttons disable again until new changes are made

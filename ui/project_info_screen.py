@@ -250,7 +250,7 @@ class ProjectInfoScreen(QWidget):
         self.buttons_layout.setSpacing(20)
 
         # Button 1: Semiautomatic
-        self.semi_btn = QPushButton("Resume semiautomatic transcription")
+        self.semi_btn = QPushButton("Resume in semiautomatic mode")
         self.semi_btn.setFixedHeight(60)
         self.semi_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.semi_btn.setStyleSheet("""
@@ -263,7 +263,7 @@ class ProjectInfoScreen(QWidget):
         self.semi_btn.clicked.connect(lambda: self.semiauto_requested.emit(self.current_project))
 
         # Button 2: Resume 
-        self.resume_btn = QPushButton("Resume automatic transcription")
+        self.resume_btn = QPushButton("Resume in automatic mode")
         self.resume_btn.setFixedHeight(60)
         self.resume_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.resume_btn.setStyleSheet("""

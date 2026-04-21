@@ -66,6 +66,7 @@ class MasterWindow(QMainWindow):
         self.project_info.validation_requested.connect(self.on_open_validation_from_info)
         self.project_info.export_requested.connect(self.on_export_requested)
         self.project_info.resume_requested.connect(self.on_resume_transcription)
+        self.project_info.semiauto_requested.connect(self.on_resume_semiautomatic_transcription)
         self.validate_staves.exit_requested.connect(self.on_exit_validation)
         self.validate_notation.exit_requested.connect(self.on_exit_validation)
         self.validate_staves.forward_requested.connect(self.on_start_semiautomatic_phase2)
@@ -148,6 +149,38 @@ class MasterWindow(QMainWindow):
                 voices_data.append({"name": v_name})
                 
         self.on_start_transcription(project_name, voices_data)
+
+    def on_resume_semiautomatic_transcription(self, project_name):
+        state_path = Path("Projects") / project_name / "project_state.json"
+        voices_data = []
+        if not state_path.exists():
+            return
+            
+        with open(state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+            
+        voices_dict = state.get("voices", {})
+        for v_folder in sorted(voices_dict.keys()):
+            v_name = voices_dict[v_folder].get("metadata", {}).get("voice_name", v_folder)
+            voices_data.append({"name": v_name})
+            
+        all_staff_prediction_done = True
+        all_position_classification_done = True
+        
+        for v_folder, v_data in voices_dict.items():
+            pred_status = v_data.get("prediction_status", {})
+            if pred_status.get("staff_prediction") != 1:
+                all_staff_prediction_done = False
+            if pred_status.get("position_classification") != 1 or pred_status.get("notes_prediction") != 1:
+                all_position_classification_done = False
+
+        if not all_staff_prediction_done:
+            self.stacked_widget.setCurrentWidget(self.progress_screen)
+            self.progress_screen.start_transcription(project_name, voices_data, mode="semi")
+        elif not all_position_classification_done:
+            self.on_semiautomatic_ready(project_name)
+        else:
+            self.on_semiautomatic_phase2_ready(project_name)
 
     def on_transcription_finished(self, project_name):
         self.current_project_name = project_name
