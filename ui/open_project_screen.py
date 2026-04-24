@@ -16,14 +16,24 @@ class SizeCalculatorWorker(QThread):
     def __init__(self, folder_path):
         super().__init__()
         self.folder_path = folder_path
+        self._is_cancelled = False
 
     def run(self):
         if not self.folder_path.exists():
             self.size_calculated.emit(0)
             return
-        total_size_bytes = sum(f.stat().st_size for f in self.folder_path.glob('**/*') if f.is_file())
+        total_size_bytes = 0
+        for f in self.folder_path.glob('**/*'):
+            if self._is_cancelled:
+                return
+            if f.is_file():
+                total_size_bytes += f.stat().st_size
         size_mb = round(total_size_bytes / (1024 * 1024))
-        self.size_calculated.emit(size_mb)
+        if not self._is_cancelled:
+            self.size_calculated.emit(size_mb)
+
+    def cancel(self):
+        self._is_cancelled = True
 
 
 
@@ -242,7 +252,7 @@ class OpenProjectScreen(QWidget):
         header_layout.setContentsMargins(20, 0, 20, 0)
 
         self.back_btn = SvgTextHoverButton("Go back", "icons/Back.svg", "icons/Back_gray.svg", icon_size=24, width=150)
-        self.back_btn.clicked.connect(self.go_back_requested.emit)
+        self.back_btn.clicked.connect(self.handle_go_back)
 
         title_label = QLabel("Open project")
         title_label.setStyleSheet("color: white; font-size: 32px; font-weight: bold;")
@@ -290,8 +300,20 @@ class OpenProjectScreen(QWidget):
         content_layout.addWidget(self.project_list, 1, Qt.AlignmentFlag.AlignHCenter)
         main_layout.addWidget(content_widget, 1)
 
+    def handle_go_back(self):
+        """Safely cancel all background threads before navigating away."""
+        for worker in self.size_threads:
+            if worker.isRunning():
+                worker.cancel()
+                worker.wait()
+        self.go_back_requested.emit()
+
     def load_projects(self):
         """Scans the Projects directory and populates the list."""
+        for worker in self.size_threads:
+            if worker.isRunning():
+                worker.cancel()
+                worker.wait()
         self.project_list.clear()
         self.size_threads.clear()
         projects_dir = Path("Projects")
@@ -326,6 +348,10 @@ class OpenProjectScreen(QWidget):
 
     def handle_open_project(self, project_name):
         print(f"Opening project: {project_name}")
+        for worker in self.size_threads:
+            if worker.isRunning():
+                worker.cancel()
+                worker.wait()
         self.open_project_requested.emit(project_name)
 
     def handle_delete_project(self, project_name, row_widget):

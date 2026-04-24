@@ -3,15 +3,505 @@ import json
 import copy
 from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QPushButton, QLabel, QFrame, QScrollArea, QSizePolicy, QDialog)
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF, QPointF, QEventLoop
-from PyQt6.QtGui import QPainter, QFontMetrics, QColor, QFont, QPixmap, QImage, QPainterPath, QBrush, QPen, QShortcut, QKeySequence
+                             QPushButton, QLabel, QFrame, QScrollArea, QSizePolicy, QDialog,
+                             QGraphicsView, QGraphicsScene, QGraphicsItem)
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF, QPointF, QEventLoop, QThread, QMimeData, QPoint
+from PyQt6.QtGui import QPainter, QFontMetrics, QColor, QFont, QPixmap, QImage, QPainterPath, QBrush, QPen, QShortcut, QKeySequence, QTransform, QDrag
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtSvgWidgets import QSvgWidget
-from PyQt6.QtCore import QThread
+from PyQt6.QtSvgWidgets import QSvgWidget, QGraphicsSvgItem
 
 
 # --- HELPER CLASSES ---
+
+ID_TO_SVG = {
+    0: "flat", 1: "natural", 2: "sharp",
+    3: "barline", 4: "barline_double", 
+    5: "note_breve", 6: "cadence_point", 7: "clef_c", 8: "clef_f", 9: "clef_g",
+    11: "time_2", 12: "time_3", 13: "dot", 14: "fermata",
+    15: "note_longa", 16: "note_maxima", 17: "note_eighth", 18: "note_half", 19: "note_quarter",
+    20: "note_16th", 21: "note_whole", 22: "note_whole_colored",
+    23: "repeat", 24: "rest_breve", 25: "rest_eighth", 26: "rest_half",
+    27: "rest_longa", 28: "rest_quarter", 29: "rest_16th", 30: "rest_whole",
+    31: "slur", 32: "time_c", 33: "time_cut", 34: "rest_maxima"
+}
+
+SVG_TO_ID = {v: k for k, v in ID_TO_SVG.items()}
+
+# Height of the symbol relative to the line spacing (1.0 = exactly the distance between two staff lines)
+SYMBOL_HEIGHTS = {
+    13: 1.15,   # dot 
+    2: 1.5,    # sharp 
+    0: 2.5,    # flat
+    1: 2,    # natural
+    21: 1.4,   # whole note
+    22: 1.4,   # colored whole note
+    5: 1.2,    # breve
+    15: 3.0,   # longa
+    16: 3.0,   # maxima
+    17: 3.0,   # eighth
+    18: 3.0,   # half
+    19: 3.0,   # quarter
+    20: 3.0,   # 16th
+    24: 1,   # rest_breve
+    25: 1.25,   # rest_eighth
+    26: 1,   # rest_half
+    27: 2,   # rest_longa
+    28: 1.25,   # rest_quarter
+    29: 1.25,   # rest_16th
+    30: 1,   # rest_whole
+    34: 3.0, # rest_maxima
+    3: 5.0,    # barline
+    4: 5.0,    # barline_double
+    23: 4.0,   # repeat
+    7: 4.0,    # clef_c
+    8: 5.0,    # clef_f
+    9: 3.5,    # clef_g
+    11: 1.5,   # time_2
+    12: 1.5,   # time_3
+    32: 1.5,   # time_c
+    33: 4.0,   # time_cut
+    6: 2.0,    # cadence_point
+    14: 1.5,   # fermata
+}
+
+class InteractiveSymbolItem(QGraphicsSvgItem):
+    """A draggable SVG symbol for the notation editor."""
+    def __init__(self, sym_data, scene_w, scene_h, staff_top_y, line_spacing):
+        class_id = sym_data.get("class_id", 0)
+        icon_name = ID_TO_SVG.get(class_id, "note_quarter") # fallback to quarter note
+        svg_path = f"icons/symbol_icons/{icon_name}.svg"
+        super().__init__(svg_path)
+        
+        self.sym_data = sym_data
+        self.scene_w = scene_w
+        self.scene_h = scene_h
+        self.staff_top_y = staff_top_y
+        self.line_spacing = line_spacing
+        
+        self.scaled_w = 0
+        self.scaled_h = 0
+        
+        self.setup_grid_map()
+        self.setup_anchor()
+            
+        # Make the SVG interactive
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        self.is_resizing = False
+        self.resize_edge = None
+        if class_id == 31:
+            self.setAcceptHoverEvents(True)
+        
+        # Calculate its position based on the JSON YOLO coordinates
+        xywhn = sym_data.get("symbol_box_relative_xywh")
+        if xywhn and len(xywhn) == 4:
+            x_c_norm, y_c_norm, w_norm, h_norm = xywhn
+            
+            rect = self.boundingRect()
+            if rect.width() > 0 and rect.height() > 0:
+                # 1. Run visuals with a dummy L3 anchor just to establish scaled dimensions
+                self.update_visuals(self.get_y_from_pos("L", 3))
+                
+                # 2. Compute raw anchor Y. We must account for the fact that YOLO's center 
+                # shifts depending on whether the symbol is upright or upside down!
+                yolo_center_y = y_c_norm * scene_h
+                
+                needs_flip = False
+                if class_id in [6, 14, 31]:
+                    needs_flip = yolo_center_y > self.get_y_from_pos("L", 3)
+                elif class_id in [15, 16, 17, 18, 19, 20]:
+                    needs_flip = yolo_center_y <= self.get_y_from_pos("L", 3)
+                    
+                if needs_flip:
+                    raw_anchor_y = yolo_center_y - self.scaled_h * (self.anchor_y_ratio - 0.5)
+                else:
+                    raw_anchor_y = yolo_center_y + self.scaled_h * (self.anchor_y_ratio - 0.5)
+                
+                # 3. Compute initial mathematically snapped anchor Y
+                snapped_anchor_y = self.calculate_y(raw_anchor_y, is_dragging=False)
+                
+                # 4. Now run visuals again with the TRUE snapped Y so rotation is accurate!
+                self.update_visuals(snapped_anchor_y)
+                
+                # Immediately fix any sloppy YOLO relative coordinates so JSON saves cleanly later
+                visual_center_y = self.get_visual_center_y(snapped_anchor_y)
+                self.sym_data["symbol_box_relative_xywh"][1] = round(visual_center_y / scene_h, 6)
+                self.update_position_data(snapped_anchor_y)
+                
+                # Position the item (origin is top left, so we offset by anchor)
+                unscaled_anchor_x = rect.x() + rect.width() / 2
+                unscaled_anchor_y = rect.y() + rect.height() * self.anchor_y_ratio
+                self.setPos((x_c_norm * scene_w) - unscaled_anchor_x, snapped_anchor_y - unscaled_anchor_y)
+
+        # Enable tracking position changes AFTER initial setup
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+
+    def setup_grid_map(self):
+        """Pre-calculates the exact absolute Y pixel coordinates for all standard lines and spaces."""
+        self.grid_map = {}
+        # Pre-calculate a generous range from 5 ledger lines below to 15 ledger lines above
+        for pos_num in range(-5, 16):
+            self.grid_map[("L", pos_num)] = self.staff_top_y + (5 - pos_num) * self.line_spacing
+            self.grid_map[("S", pos_num)] = self.staff_top_y + (5 - pos_num) * self.line_spacing - (self.line_spacing / 2)
+
+    def setup_anchor(self):
+        class_id = self.sym_data.get("class_id", 0)
+        self.anchor_y_ratio = 0.5 # Default center
+        if class_id == 0: # flat (bulb aligned with grid)
+            self.anchor_y_ratio = 0.82
+        elif class_id == 8: # clef_f (curl on L4)
+            self.anchor_y_ratio = 0.333
+        elif class_id == 9: # clef_g (curl on L2)
+            self.anchor_y_ratio = 0.75
+        elif class_id in [17, 18, 19, 20]: # Stemmed notes (stem UP by default, head at bottom)
+            self.anchor_y_ratio = 0.767
+        elif class_id in [15, 16]: # Longa, maxima (stem DOWN by default, head at top)
+            self.anchor_y_ratio = 0.8
+
+    def get_visual_center_y(self, anchor_y):
+        """Calculates the true center of the visual bounding box, accounting for 180-degree rotations and vertical flips."""
+        original_center_y = anchor_y - self.scaled_h * self.anchor_y_ratio + self.scaled_h / 2
+        if self.rotation() == 180 or self.transform().m22() < 0:
+            return anchor_y + (anchor_y - original_center_y)
+        return original_center_y
+            
+    def update_visuals(self, anchor_y):
+        """Re-evaluates scaling, rotation, vertical flipping, and tinting."""
+        class_id = self.sym_data.get("class_id", 0)
+        rect = self.boundingRect()
+        if rect.width() == 0 or rect.height() == 0: return
+
+        origin_x = rect.x() + rect.width() / 2
+        origin_y = rect.y() + rect.height() * self.anchor_y_ratio
+
+        # Update transform origin to perfectly wrap around the mathematical anchor
+        self.setTransformOriginPoint(origin_x, origin_y)
+
+        transform = QTransform()
+        # Scale around the anchor point manually to prevent global shifting!
+        transform.translate(origin_x, origin_y)
+        
+        if class_id == 31: # Slur
+            xywhn = self.sym_data.get("symbol_box_relative_xywh")
+            target_w = xywhn[2] * self.scene_w if xywhn else rect.width()
+            target_h = xywhn[3] * self.scene_h if xywhn else rect.height()
+            scale_x = target_w / rect.width()
+            scale_y = target_h / rect.height()
+            transform.scale(scale_x, scale_y)
+            self.scaled_w, self.scaled_h = target_w, target_h
+        else:
+            height_multiplier = SYMBOL_HEIGHTS.get(class_id, 3.0)
+            fixed_h = self.line_spacing * height_multiplier
+            scale_factor = fixed_h / rect.height()
+            transform.scale(scale_factor, scale_factor)
+            self.scaled_w = rect.width() * scale_factor
+            self.scaled_h = fixed_h
+
+        # Apply conditional transforms (rotation, flipping) relative to L3
+        is_upper_half = anchor_y <= self.get_y_from_pos("L", 3)
+        is_lower_half = anchor_y > self.get_y_from_pos("L", 3)
+        
+        self.setRotation(0) # Reset base rotation
+        
+        if class_id in [6, 14, 31]: # Cadence, Fermata, Slur
+            if is_lower_half:
+                self.setRotation(180)
+        elif class_id in [17, 18, 19, 20]: # Stemmed notes
+            if is_upper_half:
+                self.setRotation(180)
+        elif class_id in [15, 16]: # Longa, Maxima
+            if is_upper_half:
+                transform.scale(1, -1) # Flip vertically mathematically
+                
+        # Complete the transform origin sandwich
+        transform.translate(-origin_x, -origin_y)
+        
+        self.setTransform(transform)
+
+    def get_y_from_pos(self, p_type, p_num):
+        """Retrieves absolute pixel heights from the pre-calculated grid map."""
+        # Fallback to the middle line (L3) if position is totally invalid
+        return self.grid_map.get((p_type, p_num), self.grid_map[("L", 3)])
+
+    def snap_to_closest_position(self, raw_y, space_only=False, line_only=False, min_line=None, max_line=None):
+        """Finds the absolute closest valid music staff height from the grid map."""
+        valid_keys = [
+            ("S", -1), ("L", 0), ("S", 0), 
+            ("L", 1), ("S", 1), ("L", 2), ("S", 2), 
+            ("L", 3), ("S", 3), ("L", 4), ("S", 4), 
+            ("L", 5), ("S", 5), ("L", 6), ("S", 6)
+        ]
+        if space_only:
+            valid_keys = [k for k in valid_keys if k[0] == "S"]
+        elif line_only:
+            valid_keys = [k for k in valid_keys if k[0] == "L"]
+            if min_line is not None:
+                valid_keys = [k for k in valid_keys if k[1] >= min_line]
+            if max_line is not None:
+                valid_keys = [k for k in valid_keys if k[1] <= max_line]
+            
+        valid_ys = [self.grid_map[k] for k in valid_keys]
+        return min(valid_ys, key=lambda y: abs(y - raw_y))
+
+    def calculate_y(self, raw_y, is_dragging=False):
+        """Forces items to their correct theoretical heights."""
+        class_id = self.sym_data.get("class_id", 0)
+        pos_type = self.sym_data.get("position_type")
+        pos_num = self.sym_data.get("position_number")
+        
+        if class_id == 9: # clef_g ALWAYS locked to L2
+            return self.get_y_from_pos("L", 2)
+            
+        if class_id in [3, 4, 23]: # Barlines
+            return self.get_y_from_pos("L", 3)
+                
+        if class_id in [11, 12, 32, 33]: # Time Signatures
+            return self.get_y_from_pos("L", 3)
+            
+        if class_id == 13: # Dot
+            if not is_dragging and pos_type == "S" and pos_num is not None:
+                try: return self.get_y_from_pos(pos_type, int(pos_num))
+                except ValueError: pass
+            return self.snap_to_closest_position(raw_y, space_only=True)
+            
+        if class_id in [7, 8]: # Clef C and Clef F
+            if not is_dragging and pos_type == "L" and pos_num is not None:
+                try: 
+                    pn = int(pos_num)
+                    if class_id == 7: pn = max(1, min(5, pn))
+                    if class_id == 8: pn = max(3, min(5, pn))
+                    return self.get_y_from_pos("L", pn)
+                except ValueError: pass
+                
+            if class_id == 7:
+                return self.snap_to_closest_position(raw_y, line_only=True, min_line=1, max_line=5)
+            else:
+                return self.snap_to_closest_position(raw_y, line_only=True, min_line=3, max_line=5)
+                
+        if class_id in [0, 1, 2, 5, 15, 16, 17, 18, 19, 20, 21, 22] or class_id in range(24, 31) or class_id == 34:
+            if not is_dragging and pos_type in ["L", "S"] and pos_num is not None:
+                try: return self.get_y_from_pos(pos_type, int(pos_num))
+                except ValueError: pass
+                    
+            if not is_dragging and (class_id in range(24, 31) or class_id == 34):
+                return self.get_y_from_pos("S", 3) # Force rests to 3rd space by default if no semantic pos
+                    
+            return self.snap_to_closest_position(raw_y)
+                
+        if class_id in [6, 14]: # Fermata / Cadence Point
+            if raw_y < self.staff_top_y + (self.line_spacing * 2):
+                return self.staff_top_y - (self.line_spacing * 2) # Above 1
+            else:
+                return self.staff_top_y + (self.line_spacing * 6) # Below 1
+                
+        if class_id == 31: # Slur
+            if raw_y < self.staff_top_y + (self.line_spacing * 2):
+                return self.staff_top_y - (self.line_spacing * 3) # Above 2
+            else:
+                return self.staff_top_y + (self.line_spacing * 7) # Below 2
+                
+        return self.staff_top_y + (self.line_spacing * 2) # Center of staff
+
+    def update_position_data(self, snapped_anchor_y):
+        """Reverse-calculates the Semantic position class based on physical Y drop."""
+        class_id = self.sym_data.get("class_id", 0)
+        
+        if class_id == 9: # clef_g ALWAYS locked to L2
+            self.sym_data["position_type"] = "L"
+            self.sym_data["position_number"] = 2
+            return
+            
+        if class_id in [0, 1, 2, 5, 7, 8, 13, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 34]:
+            valid_keys = [
+                ("S", -1), ("L", 0), ("S", 0), 
+                ("L", 1), ("S", 1), ("L", 2), ("S", 2), 
+                ("L", 3), ("S", 3), ("L", 4), ("S", 4), 
+                ("L", 5), ("S", 5), ("L", 6), ("S", 6)
+            ]
+            if class_id == 13:
+                valid_keys = [k for k in valid_keys if k[0] == "S"]
+            elif class_id == 7:
+                valid_keys = [k for k in valid_keys if k[0] == "L" and 1 <= k[1] <= 5]
+            elif class_id == 8:
+                valid_keys = [k for k in valid_keys if k[0] == "L" and 3 <= k[1] <= 5]
+                
+            for pt, pn in valid_keys:
+                # Direct dictionary lookup
+                if abs(self.grid_map[(pt, pn)] - snapped_anchor_y) < 1.0:
+                    self.sym_data["position_type"] = pt
+                    self.sym_data["position_number"] = pn
+                    break
+
+    def itemChange(self, change, value):
+        """Intercepts dragging to keep movement horizontally free but vertically snapped."""
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene():
+            new_pos = value
+            rect = self.boundingRect()
+            unscaled_anchor_x = rect.x() + rect.width() / 2
+            unscaled_anchor_y = rect.y() + rect.height() * self.anchor_y_ratio
+            
+            proposed_anchor_y = new_pos.y() + unscaled_anchor_y
+            
+            snapped_anchor_y = self.calculate_y(proposed_anchor_y, is_dragging=True)
+            
+            # Trigger rotation and flip updates automatically!
+            self.update_visuals(snapped_anchor_y)
+            
+            new_x_c_norm = (new_pos.x() + unscaled_anchor_x) / self.scene_w
+            visual_center_y = self.get_visual_center_y(snapped_anchor_y)
+            
+            self.sym_data["symbol_box_relative_xywh"][0] = round(new_x_c_norm, 6)
+            self.sym_data["symbol_box_relative_xywh"][1] = round(visual_center_y / self.scene_h, 6)
+            self.update_position_data(snapped_anchor_y)
+            
+            return QPointF(new_pos.x(), snapped_anchor_y - unscaled_anchor_y)
+            
+        return super().itemChange(change, value)
+        
+    def hoverMoveEvent(self, event):
+        if self.sym_data.get("class_id") == 31:
+            scene_pos = event.scenePos()
+            scene_rect = self.sceneBoundingRect()
+            margin = 15.0 # visual pixels on screen margin
+            
+            if scene_pos.x() <= scene_rect.left() + margin:
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+                self.resize_edge = 'left'
+            elif scene_pos.x() >= scene_rect.right() - margin:
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+                self.resize_edge = 'right'
+            else:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.resize_edge = None
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        if getattr(self, 'resize_edge', None):
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.resize_edge = None
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+            
+        view = self.scene().views()[0] if self.scene() and self.scene().views() else None
+        if view and getattr(view, 'mode', None) == "delete":
+            # Search by object identity to completely bypass dictionary value equality bugs
+            idx = next((i for i, sym in enumerate(view.symbols) if sym is self.sym_data), -1)
+            if idx != -1:
+                view.symbols.pop(idx)
+                self.scene().removeItem(self)
+                
+                view.undo_stack.append({"type": "delete", "index": idx, "symbol": self.sym_data})
+                view.undo_state_changed.emit(True)
+            event.accept()
+            return
+            
+        # Capture the original state before any movement or resizing begins
+        self.undo_pre_state = copy.deepcopy(self.sym_data)
+            
+        if getattr(self, 'resize_edge', None):
+            self.is_resizing = True
+            self.resize_start_pos = event.scenePos()
+            self.resize_start_xywhn = list(self.sym_data.get("symbol_box_relative_xywh"))
+            event.accept() # Consume the click to prevent the default movement drag
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if getattr(self, 'is_resizing', False):
+            delta_x = event.scenePos().x() - self.resize_start_pos.x()
+            delta_x_norm = delta_x / self.scene_w
+            
+            xywhn = list(self.resize_start_xywhn)
+            
+            if self.resize_edge == 'right':
+                new_w = max(0.005, xywhn[2] + delta_x_norm)
+                new_x = xywhn[0] + (new_w - xywhn[2]) / 2.0
+            elif self.resize_edge == 'left':
+                new_w = max(0.005, xywhn[2] - delta_x_norm)
+                new_x = xywhn[0] - (new_w - xywhn[2]) / 2.0
+                
+            self.sym_data["symbol_box_relative_xywh"][2] = round(new_w, 6)
+            self.sym_data["symbol_box_relative_xywh"][0] = round(new_x, 6)
+            
+            # Prevent setPos from triggering itemChange tracking while we manually adjust
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, False)
+            
+            rect = super().boundingRect()
+            current_anchor_y = self.y() + rect.y() + rect.height() * self.anchor_y_ratio
+            
+            self.update_visuals(current_anchor_y)
+            
+            unscaled_anchor_x = rect.x() + rect.width() / 2
+            new_x_pos = (self.sym_data["symbol_box_relative_xywh"][0] * self.scene_w) - unscaled_anchor_x
+            self.setPos(new_x_pos, self.y())
+            
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        """Toggles between Barline/Double and Whole Note/Colored."""
+        class_id = self.sym_data.get("class_id", 0)
+        new_id = None
+        if class_id == 3: new_id = 4
+        elif class_id == 4: new_id = 3
+        elif class_id == 21: new_id = 22
+        elif class_id == 22: new_id = 21
+        
+        if new_id is not None:
+            pre_state = copy.deepcopy(self.sym_data)
+            
+            old_rect = self.boundingRect()
+            current_anchor_x = self.x() + old_rect.x() + old_rect.width() / 2
+            current_anchor_y = self.y() + old_rect.y() + old_rect.height() * self.anchor_y_ratio
+            
+            self.sym_data["class_id"] = new_id
+            icon_name = ID_TO_SVG.get(new_id, "note_quarter")
+            self.setSharedRenderer(QSvgRenderer(f"icons/symbol_icons/{icon_name}.svg"))
+            
+            self.setup_anchor()
+            new_rect = self.boundingRect()
+            self.update_visuals(current_anchor_y)
+            
+            new_unscaled_anchor_x = new_rect.x() + new_rect.width() / 2
+            new_unscaled_anchor_y = new_rect.y() + new_rect.height() * self.anchor_y_ratio
+            self.setPos(current_anchor_x - new_unscaled_anchor_x, current_anchor_y - new_unscaled_anchor_y)
+            
+            visual_center_y = self.get_visual_center_y(current_anchor_y)
+            self.sym_data["symbol_box_relative_xywh"][1] = round(visual_center_y / self.scene_h, 6)
+            
+            for view in self.scene().views():
+                if hasattr(view, 'undo_state_changed'):
+                    view.undo_stack.append({
+                        "type": "edit",
+                        "symbol": self.sym_data,
+                        "previous_state": pre_state
+                    })
+                    view.undo_state_changed.emit(True)
+
+    def mouseReleaseEvent(self, event):
+        if getattr(self, 'is_resizing', False):
+            self.is_resizing = False
+            self.resize_edge = None
+        else:
+            super().mouseReleaseEvent(event)
+            
+        # If the state actually changed, record it in the undo stack
+        if hasattr(self, 'undo_pre_state') and self.undo_pre_state != self.sym_data:
+            for view in self.scene().views():
+                if hasattr(view, 'undo_state_changed'):
+                    view.undo_stack.append({
+                        "type": "edit", 
+                        "symbol": self.sym_data, 
+                        "previous_state": self.undo_pre_state
+                    })
+                    view.undo_state_changed.emit(True)
 
 class TopBarButton(QPushButton):
     """Custom button that supports an icon on either the left or right side."""
@@ -123,6 +613,70 @@ class ToggleActionButton(QPushButton):
             """)
             self.text_label.setStyleSheet("color: #026BBC; font-size: 20px; font-weight: bold; background: transparent; border: none;")
         self.icon_widget.update() # Trigger a redraw of the icon
+
+
+
+class SymbolToolButton(QPushButton):
+    """A square draggable button for the notation editor toolbar."""
+    def __init__(self, icon_filename, parent=None):
+        super().__init__(parent)
+        self.icon_filename = icon_filename
+        self.setFixedSize(55, 65)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setStyleSheet("""
+            QPushButton { background-color: white; border-radius: 10px; border: 2px solid #026BBC; }
+            QPushButton:hover { background-color: #E6F0FA; }
+            QToolTip { 
+                color: #888888; 
+                background-color: white; 
+                border: 1px solid #CCCCCC; 
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.icon_widget = QSvgWidget(f"icons/symbol_icons/{icon_filename}.svg")
+        self.icon_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.icon_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.icon_widget.setStyleSheet("background: transparent; border: none;")
+        
+        if icon_filename == "time_cut":
+            self.icon_widget.setFixedSize(20, 49) # -25% width
+        elif icon_filename == "clef_g":
+            self.icon_widget.setFixedSize(25, 49) # -20% width
+        elif icon_filename == "clef_c":
+            self.icon_widget.setFixedSize(15, 49) # -20% width
+            
+        layout.addWidget(self.icon_widget)
+        self.setToolTip(icon_filename.replace('_', ' ').title())
+        
+        self.drag_start_pos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton): return
+        if not self.drag_start_pos: return
+        if (event.pos() - self.drag_start_pos).manhattanLength() < QApplication.startDragDistance(): return
+        
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        mime_data.setText(self.icon_filename) # Sends the SVG key name to the canvas
+        drag.setMimeData(mime_data)
+        
+        # Extract a visual ghost of the button to drag with the mouse
+        pixmap = self.grab()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(event.pos())
+        
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        drag.exec(Qt.DropAction.CopyAction)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
 
 
 
@@ -505,7 +1059,7 @@ class ShortcutsDialog(QDialog):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(True)
-        self.setFixedSize(400, 520)
+        self.setFixedSize(460, 580)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -521,28 +1075,41 @@ class ShortcutsDialog(QDialog):
         bg_layout = QVBoxLayout(bg_frame)
         bg_layout.setContentsMargins(25, 25, 30, 25)
 
-        title = QLabel("Keyboard Shortcuts")
+        title = QLabel("Help & Shortcuts")
         title.setStyleSheet("color: #026BBC; font-size: 26px; font-weight: bold; border: none;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        instructions_title = QLabel("How to use:")
+        instructions_title.setStyleSheet("color: #333333; font-size: 18px; font-weight: bold; border: none;")
+        
+        instructions_text = QLabel(
+            "• <b>Drag & Drop:</b> Drag symbols from the toolbar to the canvas.<br>"
+            "• <b>Move:</b> Drag any symbol on the canvas to snap it to a new line.<br>"
+            "• <b>Double-Click:</b> Toggle barlines (single/double) & whole notes (colored).<br>"
+            "• <b>Resize Slurs:</b> Hover over the left or right edge of a slur and drag.<br>"
+            "• <b>Delete:</b> Enable delete mode (X) and click a symbol to remove it."
+        )
+        instructions_text.setStyleSheet("color: #262626; font-size: 15px; border: none; background: transparent;")
+        instructions_text.setWordWrap(True)
+
+        shortcuts_title = QLabel("Keyboard Shortcuts:")
+        shortcuts_title.setStyleSheet("color: #333333; font-size: 18px; font-weight: bold; border: none;")
 
         shortcuts_layout = QVBoxLayout()
-        shortcuts_layout.setSpacing(12)
+        shortcuts_layout.setSpacing(10)
         
         shortcuts = [
             ("F1", "Open/Close this info"),
             ("Ctrl + Z", "Undo last action"),
-            ("X", "Activate/Deactivate delete mode"),
-            ("A", "Activate/Deactivate draw mode"),
+            ("X", "Toggle delete mode"),
             ("Ctrl + S", "Submit staff"),
-            ("C", "Previous staff"),
-            ("V", "Next staff"),
-            ("Shift + C", "Previous voice"),
-            ("Shift + V", "Next voice")
+            ("C / V", "Previous / Next staff"),
+            ("Shift + C / V", "Previous / Next voice")
         ]
         
         for key, desc in shortcuts:
             lbl = QLabel(f"<span style='color: #026BBC; font-weight: 600;'>{key}</span> <span style='color: #262626;'>- {desc}</span>")
-            lbl.setStyleSheet("font-size: 16px; border: none; background: transparent;")
+            lbl.setStyleSheet("font-size: 15px; border: none; background: transparent;")
             shortcuts_layout.addWidget(lbl)
 
         # F1 to close it from inside the dialog
@@ -561,6 +1128,12 @@ class ShortcutsDialog(QDialog):
 
         bg_layout.addWidget(title)
         bg_layout.addSpacing(15)
+        bg_layout.addWidget(instructions_title)
+        bg_layout.addSpacing(5)
+        bg_layout.addWidget(instructions_text)
+        bg_layout.addSpacing(15)
+        bg_layout.addWidget(shortcuts_title)
+        bg_layout.addSpacing(5)
         bg_layout.addLayout(shortcuts_layout)
         bg_layout.addStretch()
         bg_layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -649,37 +1222,17 @@ class ThumbnailLoaderWorker(QThread):
 
 
 
-class ImageCanvas(QWidget):
-    """Custom widget to display a scaled image with rounded corners."""
-    undo_state_changed = pyqtSignal(bool)
-
+class TopImageCanvas(QWidget):
+    """A clean, lightweight canvas that only displays the raw staff image reference."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("background-color: white; border-radius: 12px; border: 2px solid #026BBC;")
         self.pixmap = None
-        self.symbols = []
-        self.undo_stack = []
-        self.mode = None # "draw" or "delete"
-        self.drawing_start_pos = None
-        self.drawing_current_pos = None
-        self.image_rect = None # Caches the drawn area for hit-detection
         self.radius = 12
 
-    def set_mode(self, mode):
-        self.mode = mode
-        if self.mode == "draw":
-            self.setCursor(Qt.CursorShape.CrossCursor)
-        elif self.mode == "delete":
-            self.setCursor(Qt.CursorShape.PointingHandCursor)
-        else:
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-
-    def set_image(self, image_path, symbols=None):
+    def set_image(self, image_path):
         """Loads a new image from the given path."""
-        self.symbols = copy.deepcopy(symbols) if symbols else []
-        self.undo_stack = []
-        self.undo_state_changed.emit(False)
         if Path(image_path).exists():
             self.pixmap = QPixmap(image_path)
         else:
@@ -687,7 +1240,6 @@ class ImageCanvas(QWidget):
         self.update()
 
     def paintEvent(self, event):
-        # First, let the default styling (background, border) draw
         super().paintEvent(event)
         
         if not self.pixmap or self.pixmap.isNull():
@@ -697,13 +1249,10 @@ class ImageCanvas(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
-        # Create a rounded clipping path so the image respects the border radius
         path = QPainterPath()
-        # We shrink the drawing area by 2 pixels to keep the border visible
         path.addRoundedRect(2, 2, self.width() - 4, self.height() - 4, self.radius, self.radius)
         painter.setClipPath(path)
 
-        # Scale the image to fit the widget while keeping aspect ratio
         scaled_pixmap = self.pixmap.scaled(
             self.width() - 4, 
             self.height() - 4, 
@@ -711,126 +1260,202 @@ class ImageCanvas(QWidget):
             Qt.TransformationMode.SmoothTransformation
         )
 
-        # Calculate coordinates to center the image
         x = int((self.width() - scaled_pixmap.width()) / 2)
         y = int((self.height() - scaled_pixmap.height()) / 2)
-        self.image_rect = QRectF(x, y, scaled_pixmap.width(), scaled_pixmap.height())
 
         painter.drawPixmap(x, y, scaled_pixmap)
-
-        # Draw the bounding boxes
-        if self.symbols:
-            # Setup a beautiful 2px blue border for the boxes
-            pen = QPen(QColor(2, 107, 188)) # #026BBC
-            pen.setWidth(3)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            
-            for sym in self.symbols:
-                xywhn = sym.get("symbol_box_relative_xywh")
-                if xywhn and len(xywhn) == 4:
-                    x_c_norm, y_c_norm, w_norm, h_norm = xywhn
-                    
-                    box_w = w_norm * scaled_pixmap.width()
-                    box_h = h_norm * scaled_pixmap.height()
-                    box_x = x + (x_c_norm * scaled_pixmap.width()) - (box_w / 2)
-                    box_y = y + (y_c_norm * scaled_pixmap.height()) - (box_h / 2)
-                    
-                    painter.drawRect(QRectF(box_x, box_y, box_w, box_h))
-
-        # Draw the temporary dashed rectangle when the user is drawing
-        if self.mode == "draw" and self.drawing_start_pos and self.drawing_current_pos:
-            pen = QPen(QColor(2, 107, 188))
-            pen.setWidth(2)
-            pen.setStyle(Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.setBrush(QBrush(QColor(2, 107, 188, 50))) # 50/255 transparency for fill
-            painter.drawRect(QRectF(self.drawing_start_pos, self.drawing_current_pos).normalized())
         
         painter.end()
 
-    def mousePressEvent(self, event):
-        if not self.image_rect or not self.pixmap:
+class NotationEditorCanvas(QGraphicsView):
+    """A vector-based canvas that renders dynamic SVGs mapped to relative JSON coordinates."""
+    undo_state_changed = pyqtSignal(bool)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.scene = QGraphicsScene(self)
+        self.setScene(self.scene)
+        self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet("QGraphicsView { background-color: white; border-radius: 12px; border: 2px solid #026BBC; }")
+        self.viewport().setStyleSheet("background: transparent;")
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setAcceptDrops(True) # Enable Drag & Drop
+        
+        self.symbols = []
+        self.undo_stack = []
+        self.mode = None 
+        
+        # Setup a fixed logical scene size. This makes relative X/Y coordinate math effortless!
+        self.scene_w = 2000 
+        self.scene_h = 300
+        self.scene.setSceneRect(0, 0, self.scene_w, self.scene_h)
+        
+        # Define the exact layout of the 5 staff lines
+        self.line_spacing = 40
+        self.staff_top_y = (self.scene_h - (4 * self.line_spacing)) / 2
+
+    def set_data(self, symbols):
+        self.symbols = copy.deepcopy(symbols) if symbols else []
+        self.undo_stack = []
+        self.undo_state_changed.emit(False)
+        self.update_scene()
+
+    def update_scene(self):
+        self.scene.clear()
+        
+        # 1. Draw the 5 main staff lines
+        pen = QPen(QColor("#cccccc"))  # 333333
+        pen.setWidth(4)
+        
+        margin = 20
+        for i in range(5):
+            y = self.staff_top_y + (i * self.line_spacing)
+            self.scene.addLine(margin, y, self.scene_w - margin, y, pen)
+            
+        # 2. Iterate through self.symbols and place QGraphicsSvgItems!
+        for sym in self.symbols:
+            if sym.get("class_id") == 10:  # Skip custos as it is not used in score reconstruction
+                continue
+            item = InteractiveSymbolItem(sym, self.scene_w, self.scene_h, self.staff_top_y, self.line_spacing)
+            self.scene.addItem(item)
+            
+        self.fit_view()
+        
+    def drawBackground(self, painter, rect):
+        """Draws ledger lines on the background canvas independent of the SVG bounds."""
+        super().drawBackground(painter, rect)
+        
+        pen = QPen(QColor("#cccccc"))
+        pen.setWidth(4)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        
+        for item in self.scene.items():
+            if isinstance(item, InteractiveSymbolItem):
+                class_id = item.sym_data.get("class_id", 0)
+                if class_id in [0, 1, 2, 5, 7, 8, 9, 15, 16, 17, 18, 19, 20, 21, 22]:
+                    pos_type = item.sym_data.get("position_type")
+                    pos_num = item.sym_data.get("position_number")
+                    if pos_num is not None:
+                        try: pos_num = int(pos_num)
+                        except ValueError: continue
+                            
+                        local_rect = item.boundingRect()
+                        local_center_x = local_rect.x() + local_rect.width() / 2
+                        scene_x = item.mapToScene(QPointF(local_center_x, 0)).x()
+                        
+                        if (pos_type == "L" and pos_num >= 6) or (pos_type == "S" and pos_num >= 6):
+                            y = item.get_y_from_pos("L", 6)
+                            painter.drawLine(QPointF(scene_x - 40, y), QPointF(scene_x + 40, y))
+                            
+                        if (pos_type == "L" and pos_num <= 0) or (pos_type == "S" and pos_num <= -1):
+                            y = item.get_y_from_pos("L", 0)
+                            painter.drawLine(QPointF(scene_x - 40, y), QPointF(scene_x + 40, y))
+                            
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasText() and event.mimeData().text() in SVG_TO_ID:
+            event.acceptProposedAction()
+            
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasText() and event.mimeData().text() in SVG_TO_ID:
+            event.acceptProposedAction()
+            
+    def dropEvent(self, event):
+        icon_filename = event.mimeData().text()
+        class_id = SVG_TO_ID.get(icon_filename)
+        if class_id is None:
             return
             
-        if self.mode == "draw":
-            if self.image_rect.contains(event.position()):
-                self.drawing_start_pos = event.position()
-                self.drawing_current_pos = event.position()
-        elif self.mode == "delete":
-            # Check collisions from top to bottom (delete highest layer first)
-            for i in reversed(range(len(self.symbols))):
-                sym = self.symbols[i]
-                xywhn = sym.get("symbol_box_relative_xywh")
-                if xywhn and len(xywhn) == 4:
-                    x_c, y_c, w_n, h_n = xywhn
-                    bw = w_n * self.image_rect.width()
-                    bh = h_n * self.image_rect.height()
-                    bx = self.image_rect.x() + (x_c * self.image_rect.width()) - (bw / 2)
-                    by = self.image_rect.y() + (y_c * self.image_rect.height()) - (bh / 2)
-                    if QRectF(bx, by, bw, bh).contains(event.position()):
-                        deleted_box = self.symbols.pop(i)
-                        self.undo_stack.append({'type': 'delete', 'index': i, 'box': deleted_box})
-                        self.undo_state_changed.emit(True)
-                        self.update()
-                        break
+        scene_pos = self.mapToScene(event.position().toPoint())
+        x_c_norm = max(0.0, min(1.0, scene_pos.x() / self.scene_w))
+        y_c_norm = max(0.0, min(1.0, scene_pos.y() / self.scene_h))
+        
+        new_sym = {
+            "class_id": class_id,
+            "class_name": icon_filename,
+            "class_confidence": 1.0,
+            "symbol_box_absolute_xyxy": [0, 0, 0, 0], 
+            "symbol_box_relative_xywh": [round(x_c_norm, 6), round(y_c_norm, 6), 0.02, 0.1], # Dummy w/h to initialize
+            "position_type": None,
+            "position_number": None,
+            "position_confidence": 1.0
+        }
+        
+        # Because InteractiveSymbolItem natively reads relative coords and mathematically snaps 
+        # itself to the canvas, instantiating it triggers the placement and updating perfectly!
+        item = InteractiveSymbolItem(new_sym, self.scene_w, self.scene_h, self.staff_top_y, self.line_spacing)
+        
+        # Now that we've instantiated it, extract the true width/height the SVG requested from the engine
+        new_sym["symbol_box_relative_xywh"][2] = round(item.scaled_w / self.scene_w, 6)
+        new_sym["symbol_box_relative_xywh"][3] = round(item.scaled_h / self.scene_h, 6)
+        
+        self.scene.addItem(item)
+        self.symbols.append(new_sym)
+        
+        self.undo_stack.append({"type": "add", "symbol": new_sym})
+        self.undo_state_changed.emit(True)
+        
+        event.acceptProposedAction()
 
-    def mouseMoveEvent(self, event):
-        if self.mode == "draw" and self.drawing_start_pos:
-            # Clamp coordinates so the user can't draw outside the scaled image
-            pos = event.position()
-            x = max(self.image_rect.left(), min(pos.x(), self.image_rect.right()))
-            y = max(self.image_rect.top(), min(pos.y(), self.image_rect.bottom()))
-            self.drawing_current_pos = QPointF(x, y)
-            self.update()
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit_view()
+        
+    def fit_view(self):
+        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
-    def mouseReleaseEvent(self, event):
-        if self.mode == "draw" and self.drawing_start_pos:
-            rect = QRectF(self.drawing_start_pos, self.drawing_current_pos).normalized()
+    def set_mode(self, mode):
+        self.mode = mode
+        if self.mode == "delete":
+            self.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
             
-            # Prevent accidental tiny clicks creating micro-boxes
-            if rect.width() > 5 and rect.height() > 5:
-                nx1 = (rect.left() - self.image_rect.left()) / self.image_rect.width()
-                ny1 = (rect.top() - self.image_rect.top()) / self.image_rect.height()
-                nx2 = (rect.right() - self.image_rect.left()) / self.image_rect.width()
-                ny2 = (rect.bottom() - self.image_rect.top()) / self.image_rect.height()
-                
-                new_symbol = {
-                    "class_id": 0,
-                    "class_name": "unknown",
-                    "class_confidence": 1.0,
-                    "symbol_box_relative_xywh": [
-                        round((nx1 + nx2) / 2.0, 6), 
-                        round((ny1 + ny2) / 2.0, 6), 
-                        round(nx2 - nx1, 6), 
-                        round(ny2 - ny1, 6)
-                    ],
-                    "position_type": None,
-                    "position_number": None,
-                    "position_confidence": None
-                }
-                self.symbols.append(new_symbol)
-                self.undo_stack.append({'type': 'add'})
-                self.undo_state_changed.emit(True)
-            
-            self.drawing_start_pos = None
-            self.drawing_current_pos = None
-            self.update()
-
     def undo(self):
-        """Reverts the last drawn or deleted bounding box on the current page."""
         if not self.undo_stack:
             return
+            
         action = self.undo_stack.pop()
-        if action['type'] == 'add':
-            if self.symbols:
-                self.symbols.pop()
-        elif action['type'] == 'delete':
-            self.symbols.insert(action['index'], action['box'])
+        action_type = action.get("type")
+        
+        if action_type == "add":
+            sym = action.get("symbol")
+            if sym in self.symbols:
+                self.symbols.remove(sym)
+                for item in self.scene.items():
+                    if isinstance(item, InteractiveSymbolItem) and item.sym_data is sym:
+                        self.scene.removeItem(item)
+                        break
+                        
+        elif action_type == "delete":
+            sym = action.get("symbol")
+            idx = action.get("index", len(self.symbols))
+            self.symbols.insert(idx, sym)
+            item = InteractiveSymbolItem(sym, self.scene_w, self.scene_h, self.staff_top_y, self.line_spacing)
+            self.scene.addItem(item)
+            
+        elif action_type == "edit":
+            sym = action.get("symbol")
+            prev_state = action.get("previous_state")
+            
+            # Find the old visual item and remove it
+            for item in self.scene.items():
+                if isinstance(item, InteractiveSymbolItem) and item.sym_data is sym:
+                    self.scene.removeItem(item)
+                    break
+                    
+            # Safely update the dictionary in-place to preserve object identity throughout the stack
+            sym.clear()
+            sym.update(prev_state)
+            
+            # Recreate the visual item with restored data
+            new_item = InteractiveSymbolItem(sym, self.scene_w, self.scene_h, self.staff_top_y, self.line_spacing)
+            self.scene.addItem(new_item)
             
         self.undo_state_changed.emit(len(self.undo_stack) > 0)
-        self.update()
-
 
 
 class StaffListItem(QFrame):
@@ -1067,8 +1692,17 @@ class ValidateNotationScreen(QWidget):
         prev_layout.addWidget(prev_icon)
         self.prev_btn.clicked.connect(self.go_to_previous_staff)
 
-        # The Image Canvas 
-        self.image_canvas = ImageCanvas()
+        # The Image Canvases 
+        self.canvases_container = QWidget()
+        self.canvases_layout = QVBoxLayout(self.canvases_container)
+        self.canvases_layout.setContentsMargins(0, 0, 0, 0)
+        self.canvases_layout.setSpacing(10)
+
+        self.image_canvas = TopImageCanvas()
+        self.notation_canvas = NotationEditorCanvas()
+        
+        self.canvases_layout.addWidget(self.image_canvas, 1)
+        self.canvases_layout.addWidget(self.notation_canvas, 1)
 
         # Next Button 
         self.next_btn = QPushButton()
@@ -1093,8 +1727,45 @@ class ValidateNotationScreen(QWidget):
 
         # Assemble Top Row
         image_viewer_layout.addWidget(self.prev_btn)
-        image_viewer_layout.addWidget(self.image_canvas, 1) # Canvas stretches
+        image_viewer_layout.addWidget(self.canvases_container, 1) # Canvas stretches
         image_viewer_layout.addWidget(self.next_btn)
+
+        # ==========================================
+        # --- MIDDLE ROW: Symbol Toolbar ---
+        # ==========================================
+        self.symbol_toolbar_container = QWidget()
+        toolbar_layout = QVBoxLayout(self.symbol_toolbar_container)
+        toolbar_layout.setContentsMargins(0, 5, 0, 5)
+        toolbar_layout.setSpacing(8)
+        
+        top_row_layout = QHBoxLayout()
+        top_row_layout.setSpacing(6)
+        top_row_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        bottom_row_layout = QHBoxLayout()
+        bottom_row_layout.setSpacing(6)
+        bottom_row_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        top_icons = [
+            "clef_c", "clef_f", "clef_g", "time_c", "time_cut", "time_2", "time_3",
+            "barline", "repeat", "slur", "cadence_point", "fermata", "dot", "flat", "sharp", "natural"
+        ]
+        bottom_icons = [
+            "note_maxima", "note_longa", "note_breve", "note_whole", "note_half", "note_quarter", 
+            "note_eighth", "note_16th", "rest_maxima", "rest_longa", "rest_breve", "rest_whole", 
+            "rest_half", "rest_quarter", "rest_eighth", "rest_16th"
+        ]
+        
+        for icon in top_icons:
+            btn = SymbolToolButton(icon)
+            top_row_layout.addWidget(btn)
+            
+        for icon in bottom_icons:
+            btn = SymbolToolButton(icon)
+            bottom_row_layout.addWidget(btn)
+            
+        toolbar_layout.addLayout(top_row_layout)
+        toolbar_layout.addLayout(bottom_row_layout)
 
         # ==========================================
         # --- BOTTOM ROW: Action Buttons ---
@@ -1137,23 +1808,13 @@ class ValidateNotationScreen(QWidget):
         self.undo_btn.clicked.connect(self.on_undo_clicked)
         
         # Bind the canvas undo state to the undo button
-        self.image_canvas.undo_state_changed.connect(self.undo_btn.setEnabled)
+        self.notation_canvas.undo_state_changed.connect(self.undo_btn.setEnabled)
 
         # 3. Delete Toggle Button
         self.delete_btn = ToggleActionButton("Delete")
         self.delete_btn.clicked.connect(self.on_delete_clicked)
 
-        # 4. Draw Toggle Button
-        self.draw_btn = ToggleActionButton("Draw")
-        # TODO: Make draw active when backend supports adding new symbols
-        self.draw_btn.setEnabled(False) 
-        self.draw_btn.setStyleSheet("""
-            QPushButton { background-color: #F0F0F0; border-radius: 12px; border: 2px solid #CCCCCC; }
-        """)
-        self.draw_btn.text_label.setStyleSheet("color: #AAAAAA; font-size: 20px; font-weight: bold; background: transparent; border: none;")
-        self.draw_btn.clicked.connect(self.on_draw_clicked)
-
-        # 5. Submit Page Button
+        # 4. Submit Page Button
         self.submit_btn = QPushButton("Submit staff")
         self.submit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.submit_btn.setFixedHeight(50)
@@ -1165,19 +1826,19 @@ class ValidateNotationScreen(QWidget):
         """)
         self.submit_btn.clicked.connect(self.on_submit_clicked)
         
-        self.image_canvas.undo_state_changed.connect(self.submit_btn.setEnabled)
+        self.notation_canvas.undo_state_changed.connect(self.submit_btn.setEnabled)
 
         # Assemble Bottom Row
         action_buttons_layout.addWidget(self.info_btn)
-        action_buttons_layout.addWidget(self.undo_btn)
+        action_buttons_layout.addWidget(self.undo_btn, 1) # Stretch evenly
         action_buttons_layout.addWidget(self.delete_btn, 1) # Stretch evenly
-        action_buttons_layout.addWidget(self.draw_btn, 1)   # Stretch evenly
         action_buttons_layout.addWidget(self.submit_btn, 1) # Stretch evenly
 
         # ==========================================
         # --- ASSEMBLE MAIN CONTENT AREA ---
         # ==========================================
         main_content_layout.addWidget(image_viewer_container, 1) # Viewer gets vertical expansion
+        main_content_layout.addWidget(self.symbol_toolbar_container) 
         main_content_layout.addWidget(action_buttons_container)  # Buttons stay fixed at the bottom
 
         body_layout.addWidget(self.main_content_area, 1) 
@@ -1187,7 +1848,6 @@ class ValidateNotationScreen(QWidget):
         QShortcut(QKeySequence("F1"), self).activated.connect(self.info_btn.click)
         QShortcut(QKeySequence("Ctrl+Z"), self).activated.connect(self.undo_btn.click)
         QShortcut(QKeySequence("X"), self).activated.connect(self.delete_btn.click)
-        QShortcut(QKeySequence("A"), self).activated.connect(self.draw_btn.click)
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self.submit_btn.click)
         QShortcut(QKeySequence("C"), self).activated.connect(self.go_to_previous_staff)
         QShortcut(QKeySequence("V"), self).activated.connect(self.go_to_next_staff)
@@ -1212,8 +1872,8 @@ class ValidateNotationScreen(QWidget):
             dialog = UnsavedChangesDialog(self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 # User wants to discard changes. Clear undo state so it doesn't block future nav
-                self.image_canvas.undo_stack.clear()
-                self.image_canvas.undo_state_changed.emit(False)
+                self.notation_canvas.undo_stack.clear()
+                self.notation_canvas.undo_state_changed.emit(False)
                 return True
             else:
                 return False
@@ -1451,7 +2111,8 @@ class ValidateNotationScreen(QWidget):
         # Load the current staff image
         current_staff = self.flat_staves[self.current_staff_index]
         symbols_data = current_staff.get("symbols", [])
-        self.image_canvas.set_image(current_staff.get("absolute_image_path", ""), symbols=symbols_data)
+        self.image_canvas.set_image(current_staff.get("absolute_image_path", ""))
+        self.notation_canvas.set_data(symbols_data)
 
         # Update button states
         self.prev_btn.setEnabled(self.current_staff_index > 0)
@@ -1511,24 +2172,13 @@ class ValidateNotationScreen(QWidget):
         new_state = not self.delete_btn.is_selected
         self.delete_btn.set_selected(new_state)
         if new_state:
-            self.draw_btn.set_selected(False)
-            self.image_canvas.set_mode("delete")
+            self.notation_canvas.set_mode("delete")
         else:
-            self.image_canvas.set_mode(None)
-
-    def on_draw_clicked(self):
-        """Toggle Draw mode on/off, ensuring Delete mode turns off."""
-        new_state = not self.draw_btn.is_selected
-        self.draw_btn.set_selected(new_state)
-        if new_state:
-            self.delete_btn.set_selected(False)
-            self.image_canvas.set_mode("draw")
-        else:
-            self.image_canvas.set_mode(None)
+            self.notation_canvas.set_mode(None)
 
     def on_undo_clicked(self):
         """Triggers the canvas to undo the last action."""
-        self.image_canvas.undo()
+        self.notation_canvas.undo()
 
     def on_submit_clicked(self):
         """Saves current symbol boxes to JSON mathematically converting them to absolute coordinates."""
@@ -1541,7 +2191,7 @@ class ValidateNotationScreen(QWidget):
         current_staff = self.flat_staves[self.current_staff_index]
         
         # Get current symbols and sort them left-to-right (X), then top-to-bottom (Y)
-        updated_symbols = self.image_canvas.symbols
+        updated_symbols = self.notation_canvas.symbols
         updated_symbols.sort(key=lambda s: (s.get("symbol_box_relative_xywh", [0, 0, 0, 0])[0], 
                                             s.get("symbol_box_relative_xywh", [0, 0, 0, 0])[1]))
         
@@ -1584,7 +2234,7 @@ class ValidateNotationScreen(QWidget):
         # Update in-memory data! Because we hold references to the real dictionaries, 
         # editing this updates self.project_data organically.
         current_staff["symbols"] = ordered_symbols
-        self.image_canvas.symbols = ordered_symbols
+        self.notation_canvas.symbols = ordered_symbols
         
         for item in self.staff_items:
             if item.staff_id == self.current_staff_index:
@@ -1627,8 +2277,8 @@ class ValidateNotationScreen(QWidget):
                 self.toast.show_custom_message("Symbol bounding boxes updated")
                 
                 # Clear undo stack so buttons disable again until new changes are made
-                self.image_canvas.undo_stack.clear()
-                self.image_canvas.undo_state_changed.emit(False)
+                self.notation_canvas.undo_stack.clear()
+                self.notation_canvas.undo_state_changed.emit(False)
             except Exception as e:
                 self.toast.show_custom_message(f"Error saving: {e}")
         else:
@@ -1642,19 +2292,45 @@ if __name__ == "__main__":
     window.resize(1280, 720)
     
     # Define the path ONLY for testing this screen
-    test_path = "C:/Files/Programming_projects/nanoScore/Projects/MANUAL_notation_corrections"
+    test_path = Path("C:/Files/Programming_projects/nanoScore/Projects/SEMIAUTOMATIC_test_notation_9 - Copy")
     
-    # Attempt to load voices from the path
-    window.load_voices_from_disk(test_path)
+    window.project_path = str(test_path)
+    voices_info = []
     
-    # If the path was not found or is empty, inject dummy data for visual testing
-    if not window.voice_tabs:
+    # Custom testing loader to entirely bypass background polling & project_state.json
+    if test_path.exists():
+        for voice_dir in sorted(test_path.glob("Voice_*")):
+            if voice_dir.is_dir():
+                json_file = voice_dir / f"{voice_dir.name}_data.json"
+                if json_file.exists():
+                    try:
+                        with open(json_file, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            
+                        v_name = data.get("voice", voice_dir.name)
+                        
+                        for page in data.get("pages", []):
+                            for staff in page.get("staves", []):
+                                if "staff_image_path" in staff:
+                                    full_path = Path(__file__).parent.parent / staff["staff_image_path"]
+                                    staff["absolute_image_path"] = str(full_path.resolve())
+                                    
+                        window.project_data[v_name] = data
+                        window.voice_folders[v_name] = voice_dir.name
+                        voices_info.append({"name": v_name, "state": "finished"})
+                    except Exception as e:
+                        print(f"Error loading {json_file}: {e}")
+                        
+    if voices_info:
+        voices_info[0]["state"] = "selected"
+        window.populate_voice_tabs(voices_info)
+    else:
         print(f"Path {test_path} not found or empty. Using dummy data.")
         dummy_info = [
             {"name": "Dessus", "state": "selected"},
-            {"name": "Haute-contre", "state": "in_progress"},
-            {"name": "Taille", "state": "waiting"},
-            {"name": "Basse", "state": "waiting"}
+            {"name": "Haute-contre", "state": "finished"},
+            {"name": "Taille", "state": "finished"},
+            {"name": "Basse", "state": "finished"}
         ]
         window.populate_voice_tabs(dummy_info)
 

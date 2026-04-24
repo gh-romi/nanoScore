@@ -16,14 +16,24 @@ class SizeCalculatorWorker(QThread):
     def __init__(self, folder_path):
         super().__init__()
         self.folder_path = folder_path
+        self._is_cancelled = False
 
     def run(self):
         if not self.folder_path.exists():
             self.size_calculated.emit(0)
             return
-        total_size_bytes = sum(f.stat().st_size for f in self.folder_path.glob('**/*') if f.is_file())
+        total_size_bytes = 0
+        for f in self.folder_path.glob('**/*'):
+            if self._is_cancelled:
+                return
+            if f.is_file():
+                total_size_bytes += f.stat().st_size
         size_mb = round(total_size_bytes / (1024 * 1024))
-        self.size_calculated.emit(size_mb)
+        if not self._is_cancelled:
+            self.size_calculated.emit(size_mb)
+            
+    def cancel(self):
+        self._is_cancelled = True
 
 class SvgTextHoverButton(QPushButton):
     """Reused custom back button."""
@@ -147,7 +157,7 @@ class ProjectInfoScreen(QWidget):
         header_layout.setContentsMargins(20, 0, 20, 0)
 
         self.back_btn = SvgTextHoverButton("Go back", "icons/Back.svg", "icons/Back_gray.svg", icon_size=24, width=150)
-        self.back_btn.clicked.connect(self.go_back_requested.emit)
+        self.back_btn.clicked.connect(self.handle_go_back)
 
         title_label = QLabel("Project info")
         title_label.setStyleSheet("color: white; font-size: 32px; font-weight: bold;")
@@ -319,6 +329,13 @@ class ProjectInfoScreen(QWidget):
         
         main_layout.addLayout(scroll_constraint_layout, 1)
 
+    def handle_go_back(self):
+        """Safely cancel the background thread before leaving the screen."""
+        if self.size_thread and self.size_thread.isRunning():
+            self.size_thread.cancel()
+            self.size_thread.wait()
+        self.go_back_requested.emit()
+
     def load_project_from_name(self, project_name):
         self.current_project = project_name
         base_dir = Path("Projects") / project_name
@@ -377,6 +394,10 @@ class ProjectInfoScreen(QWidget):
         }
         self.load_project_data(project_data)
         
+        if self.size_thread and self.size_thread.isRunning():
+            self.size_thread.cancel()
+            self.size_thread.wait()
+            
         # Calculate size in the background
         self.size_thread = SizeCalculatorWorker(base_dir)
         self.size_thread.size_calculated.connect(self._update_size_label)
