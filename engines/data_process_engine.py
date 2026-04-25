@@ -33,10 +33,12 @@ class DataProcessEngine:
     # --- 2. Coordinate Extraction Helpers ---
     @staticmethod
     def _get_bbox(sym):
+        """Safely extracts the absolute bounding box [x1, y1, x2, y2] from a symbol dictionary."""
         return sym.get("symbol_box_absolute_xyxy", [0, 0, 0, 0])
 
     @classmethod
     def _get_x_center(cls, sym):
+        """Calculates the relative or absolute horizontal center of a symbol."""
         if "symbol_box_relative_xywh" in sym:
             return sym["symbol_box_relative_xywh"][0]
         bbox = cls._get_bbox(sym)
@@ -44,16 +46,21 @@ class DataProcessEngine:
 
     @classmethod
     def _get_y_center(cls, sym):
+        """Calculates the relative or absolute vertical center of a symbol."""
         if "symbol_box_relative_xywh" in sym:
             return sym["symbol_box_relative_xywh"][1]
         bbox = cls._get_bbox(sym)
         return (bbox[1] + bbox[3]) / 2.0
 
     @classmethod
-    def _get_x_min(cls, sym): return cls._get_bbox(sym)[0]
+    def _get_x_min(cls, sym): 
+        """Retrieves the left-most pixel boundary."""
+        return cls._get_bbox(sym)[0]
 
     @classmethod
-    def _get_x_max(cls, sym): return cls._get_bbox(sym)[2]
+    def _get_x_max(cls, sym): 
+        """Retrieves the right-most pixel boundary."""
+        return cls._get_bbox(sym)[2]
 
     @classmethod
     def _get_y_min(cls, sym): return cls._get_bbox(sym)[1]
@@ -63,11 +70,13 @@ class DataProcessEngine:
 
     @staticmethod
     def _overlaps_1d(min1, max1, min2, max2):
+        """Checks if two 1D segments (like horizontal or vertical bounds) overlap mathematically."""
         return max(min1, min2) <= min(max1, max2)
 
     # --- 3. JSON Staff Extractor ---
     @staticmethod
     def _extract_staves_and_symbols(data):
+        """Flattens the nested page/staff architecture into a single sequential list of staves for easier linear processing."""
         staves = []
         for page in data.get("pages", []):
             p_id = page.get("page_id")
@@ -83,6 +92,12 @@ class DataProcessEngine:
 
     # --- 4. Main Semantic Engine ---
     def process_agnostic_to_partially_semantic(self, agnostic_data):
+        """
+        Phase 4: Transforms raw YOLO object detections into a structured, sequential musical timeline.
+        
+        This step cleans up duplicate predictions, infers the spatial span of slurs, 
+        attaches modifiers (dots, accidentals) to their respective notes, and groups events by barlines.
+        """
         staves = self._extract_staves_and_symbols(agnostic_data)
 
         semantic_measures = []
@@ -369,6 +384,12 @@ class DataProcessEngine:
 
     # --- 5. Semantic Generation Engine ---
     def process_partially_semantic_to_semantic(self, partially_semantic_data, cheatsheet, requires_coloration=False):
+        """
+        Phase 5: Translates physical positions into absolute musical pitches and mathematical durations.
+        
+        Utilizes the 'semantic_cheatsheet.json' to map staff line/space positions to exact notes 
+        (e.g., L2 with G-Clef -> G4) and applies active key signatures and time signatures.
+        """
         # --- 0. Rhythm Resolution ---
         # Select the correct dictionary base based on global coloration check
         base_key = "base_12" if requires_coloration else "base_4"
@@ -579,6 +600,12 @@ class DataProcessEngine:
         return len([e for e in measure["events"] if e["type"] in ["note", "rest"]])
 
     def sync_voices(self, voices_data):
+        """
+        Phase 6.5: Aligns measures across multiple voices by mathematically slicing long continuous measures.
+        
+        Since historical scores often lack synchronized barlines, this method analyzes the voice with the most 
+        barlines on a page and forces the other voices to split their measures at the exact midpoint to match.
+        """
         # 1. Gather all unique page_ids across the entire score
         page_ids = set()
         for voice in voices_data:
@@ -698,6 +725,10 @@ class DataProcessEngine:
         return voices_data
 
     def generate_musicxml(self, all_voices_data, cheatsheet, output_filename, project_name=None):
+        """
+        Phase 6: Compiles the fully semantic, synchronized JSON data into a valid MusicXML 3.1 Partwise document.
+        Supports single-voice outputs as well as multi-voice bracketed scores.
+        """
         lines = []
 
         def add(text, indent=0):
@@ -859,6 +890,10 @@ class DataProcessEngine:
             f.write("\n".join(lines))
 
     def generate_duration_validation(self, voices_data, output_file):
+        """
+        Phase 7: Scans the final synchronized measures to detect any mathematical duration mismatches between voices.
+        Outputs a JSON report detailing exactly where errors occurred (page, staff, and measure number).
+        """
         if not voices_data:
             print("No voice data provided for validation.")
             return

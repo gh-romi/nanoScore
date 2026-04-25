@@ -6,12 +6,12 @@ from typing import List, Union
 class YoloInferenceEngine:
     """
     A class to encapsulate the YOLO object detection inference process.
-    It uses the 'ultralytics' library to load a model and run predictions.
+    It abstracts the 'ultralytics' library to load models and run predictions tailored for musical notation.
     """
 
     def __init__(self, model_path: str):
         """
-        Initializes the YoloInferenceEngine.
+        Initializes the YoloInferenceEngine and loads the model weights into memory.
 
         Args:
             model_path (str): The path to the YOLO model file (e.g., .pt or .onnx).
@@ -33,7 +33,9 @@ class YoloInferenceEngine:
                          name: str = "yolo_predictions",
                          progress_callback=None) -> List:
         """
-        Runs prediction on all images within a specified folder.
+        Phase 1: Runs staff detection on all full-page images within a specified folder.
+        
+        This uses standard NMS settings as staves are generally distinct and do not heavily overlap.
 
         Args:
             input_folder (str): Path to the folder containing images.
@@ -52,8 +54,8 @@ class YoloInferenceEngine:
         print(f"Starting prediction on folder: {input_folder}")
         start_time = time.time()
 
-        # The model.predict method can take a directory path directly.
-        # We'll run prediction in stream mode for memory efficiency.
+        # Run prediction in stream mode to yield results one-by-one.
+        # This prevents massive memory spikes when processing 100+ page books.
         results_generator = self.model.predict(
             source=input_folder,
             conf=conf,
@@ -71,16 +73,13 @@ class YoloInferenceEngine:
         valid_exts = {'.png', '.jpg', '.jpeg', '.pdf', '.tiff', '.bmp'}
         total_files = len([f for f in os.listdir(input_folder) if os.path.splitext(f)[1].lower() in valid_exts])
 
-        # Iterate through the generator to get all results
+        # Iterate through the generator to process results and update the UI in real-time
         results_list = []
         for i, result in enumerate(results_generator):
             results_list.append(result)
             
             if progress_callback:
                 progress_callback(i + 1, total_files)
-            # You could add more detailed per-image processing here if needed
-            # For example, printing the number of boxes found in each image:
-            # print(f"Found {len(result.boxes)} objects in {os.path.basename(result.path)}")
 
         end_time = time.time()
         total_seconds = end_time - start_time
@@ -101,8 +100,10 @@ class YoloInferenceEngine:
                          name: str = "yolo_predictions",
                          progress_callback=None) -> List:
         """
-        Runs notes prediction on all cropped staff images within a specified folder.
-        Uses specialized NMS settings for dense objects like musical notes.
+        Phase 2: Runs symbol detection on cropped staff images.
+        
+        Crucially uses `agnostic_nms=True` to prevent the model from creating overlapping bounding boxes 
+        for different classes (e.g., preventing a 'note_quarter' and 'sharp' from perfectly overlapping).
         """
         if not os.path.isdir(input_folder):
             raise NotADirectoryError(f"Input path is not a directory: {input_folder}")
@@ -152,8 +153,10 @@ class YoloInferenceEngine:
                           name: str = "yolo_classification",
                           progress_callback=None) -> List:
         """
-        Runs position classification on square-padded cropped symbols.
-        Uses verbose=False to minimize terminal spam during high-volume processing.
+        Phase 3: Runs position classification on individually cropped, square-padded symbols.
+        
+        Uses `verbose=False` to prevent the terminal from crashing or lagging due to the 
+        massive amount of standard output when processing thousands of individual note crops.
         """
         if not os.path.isdir(input_folder):
             raise NotADirectoryError(f"Input path is not a directory: {input_folder}")
@@ -180,6 +183,7 @@ class YoloInferenceEngine:
         results_list = []
         for i, result in enumerate(results_generator):
             results_list.append(result)
+            # Throttle the UI updates for classification to prevent signal flooding (updates every 50 symbols)
             if progress_callback:
                 if i == 0 or (i + 1) % 50 == 0 or (i + 1) == total_files:
                     val = f">{i + 1}" if (i + 1) < total_files else total_files

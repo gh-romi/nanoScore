@@ -11,6 +11,10 @@ from collections import Counter
 
 
 def parse_validation_results(json_data):
+    """
+    Analyzes the duration validation JSON report.
+    Calculates total and consistent measures, and extracts detailed string comments and locations for any mismatches.
+    """
     total_measures = len(json_data["measures"])
     consistent_measures = sum(1 for m in json_data["measures"] if m["is_equal"])
     
@@ -87,6 +91,7 @@ def parse_validation_results(json_data):
 class FileSavedPopup(QDialog):
     """A beautiful, non-intrusive popup to reassure the user their file is safe."""
     def __init__(self, file_name, project_path, parent=None):
+        """Constructs a frameless, modal dialog displaying the exported file's name and absolute path."""
         super().__init__(parent)
         # Make the window frameless and transparent to allow rounded corners
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
@@ -172,6 +177,7 @@ class FileSavedPopup(QDialog):
 class SvgTextHoverButton(QPushButton):
     """A custom button that swaps an SVG and changes text color on hover."""
     def __init__(self, text, normal_svg_path, hover_svg_path, icon_size=24, width=150):
+        """Initializes the button with a fixed size, an SVG icon, and text layout."""
         super().__init__()
         self.normal_svg = normal_svg_path
         self.hover_svg = hover_svg_path
@@ -210,6 +216,7 @@ class SvgTextHoverButton(QPushButton):
 class MismatchRowWidget(QWidget):
     """The custom row for the list of inconsistent measures."""
     def __init__(self, measure_num, comment, location):
+        """Builds a UI row displaying the measure number, the error description, and the physical page/staff location."""
         super().__init__()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
@@ -254,6 +261,7 @@ class ValidationResultsScreen(QWidget):
     export_requested = pyqtSignal()
 
     def __init__(self):
+        """Constructs the Validation Results screen, including the header, summary statistics, and the scrollable mismatch list."""
         super().__init__()
         self.setStyleSheet("background-color: #FAFAFA;")
         
@@ -377,6 +385,8 @@ class ValidationResultsScreen(QWidget):
 
     def load_validation_data(self, total_measures, consistent_measures, mismatches):
         """
+        Updates the summary labels and populates the scrollable list with mismatch rows.
+        
         Populates the screen with data.
         mismatches should be a list of dicts: 
         [{"measure": 1, "comment": "<comment>", "location": "pX, sY"}, ...]
@@ -412,6 +422,7 @@ class ValidationResultsScreen(QWidget):
             self.mismatch_list.setItemWidget(list_item, row_widget)
 
     def load_project_results(self, project_name, show_popup=True):
+        """Reads the validation JSON from disk, parses it, and optionally shows the success popup if MusicXML exists."""
         base_dir = Path("Projects") / project_name
         val_path = base_dir / f"{project_name}_validation.json"
         xml_path = base_dir / f"{project_name}.musicxml"

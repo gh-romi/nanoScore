@@ -13,7 +13,7 @@ from PyQt6.QtSvgWidgets import QSvgWidget
 
 
 class DynamicListWidget(QListWidget):
-    """A custom list widget that tells the window exactly how much space it needs."""
+    """A custom list widget that dynamically resizes its height to fit all items perfectly without an internal scrollbar."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.needed_height = 90 
@@ -27,6 +27,7 @@ class SvgTextHoverButton(QPushButton):
     """A custom button that swaps an SVG and changes text color on hover."""
     def __init__(self, text, normal_svg_path, hover_svg_path, icon_size=40):
         super().__init__()
+        """Initializes the button with a fixed size and sets up the internal layout for the icon and text."""
         self.normal_svg = normal_svg_path
         self.hover_svg = hover_svg_path
 
@@ -71,11 +72,13 @@ class SvgTextHoverButton(QPushButton):
 
 
 class VoiceRowWidget(QWidget):
+    """A custom widget representing a single voice input row, including name field, PDF upload button, and error handling."""
     delete_requested = pyqtSignal(QWidget)
     error_state_changed = pyqtSignal()
 
     def __init__(self, number):
         super().__init__()
+        """Initializes the grid layout, input fields, and styling for the voice row."""
         self.file_path = None
 
         layout = QHBoxLayout(self)
@@ -180,6 +183,7 @@ class VoiceRowWidget(QWidget):
         layout.addWidget(self.box)
 
     def upload_file(self):
+        """Opens a file dialog to select a PDF and updates the button text to show the elided filename."""
         file_name, _ = QFileDialog.getOpenFileName(self, "Select PDF", "", "PDF Files (*.pdf)")
         if file_name:
             self.file_path = file_name 
@@ -197,6 +201,7 @@ class VoiceRowWidget(QWidget):
             """)
 
     def show_error(self, message):
+        """Visually updates the input field to a red error state and displays the error message."""
         self.name_input.setStyleSheet("""
             QLineEdit {
                 color: #D32F2F; 
@@ -218,6 +223,7 @@ class VoiceRowWidget(QWidget):
             self.error_state_changed.emit()
 
     def clear_error(self):
+        """Reverts the input field back to its normal, non-error styling."""
         self.name_input.setStyleSheet("""
             QLineEdit {
                 color: #026BBC; 
@@ -238,10 +244,12 @@ class VoiceRowWidget(QWidget):
             self.error_state_changed.emit()
 
     def set_number(self, num):
+        """Updates the label number (e.g., when a preceding row is deleted)."""
         self.num_label.setText(f"Voice {num}:")
 
 
 class CreateProjectScreen(QWidget):
+    """The UI screen where users define project metadata and attach PDF files to specific voices."""
     # This signal tells the Master Window to go back
     go_back_requested = pyqtSignal()
     start_transcription_requested = pyqtSignal(str, list)
@@ -249,6 +257,7 @@ class CreateProjectScreen(QWidget):
 
     def __init__(self):
         super().__init__()
+        """Constructs the main layout, header, form fields, dynamic list, and bottom action buttons."""
         self.setStyleSheet("background-color: #FAFAFA;")
 
         # Apply layout directly to self
@@ -494,6 +503,7 @@ class CreateProjectScreen(QWidget):
         self.add_voice_row()
 
     def add_voice_row(self):
+        """Adds a new VoiceRowWidget to the list, capping at a maximum of 20 voices."""
         # Prevent adding more than 20
         if self.voice_list.count() >= 20:
             return
@@ -516,6 +526,7 @@ class CreateProjectScreen(QWidget):
             self.add_voice_btn.setEnabled(False)
 
     def remove_voice_row(self, widget):
+        """Removes a specific voice row, updates the list height, and renumbers the remaining voices."""
         for i in range(self.voice_list.count()):
             item = self.voice_list.item(i)
             if self.voice_list.itemWidget(item) == widget:
@@ -530,6 +541,7 @@ class CreateProjectScreen(QWidget):
             #self.add_voice_btn.setVisible(True)
 
     def update_voice_numbers(self):
+        """Iterates through all current rows and updates their display numbers sequentially."""
         for i in range(self.voice_list.count()):
             item = self.voice_list.item(i)
             widget = self.voice_list.itemWidget(item)
@@ -558,12 +570,15 @@ class CreateProjectScreen(QWidget):
         self.voice_list.setMinimumHeight(min(total_needed_height, 70 * 2)) 
         
     def start_automatic_transcription(self):
+        """Triggers the validation and payload creation for the fully automatic pipeline."""
         self._start_transcription("auto")
         
     def start_semiautomatic_transcription(self):
+        """Triggers the validation and payload creation for the semiautomatic (human-in-the-loop) pipeline."""
         self._start_transcription("semi")
 
     def _start_transcription(self, mode):
+        """Validates all user inputs, checks for naming collisions, and prepares the data payload for the pipeline."""
         project_name = self.project_name_input.text().strip()
         project_name = project_name.rstrip(' .')
         
@@ -653,6 +668,7 @@ class CreateProjectScreen(QWidget):
             self.start_semiautomatic_requested.emit(project_name, voices_data)
 
     def show_project_name_error(self, message):
+        """Visually highlights the project name input in red and displays the provided error message."""
         # Change input styling to a red alert state
         self.project_name_input.setStyleSheet("""
             QLineEdit {

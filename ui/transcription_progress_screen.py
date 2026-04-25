@@ -16,6 +16,7 @@ from engines.pipeline import TranscriptionPipeline
 class CancelDialog(QDialog):
     """A beautifully styled, custom popup mimicking the AboutDialog."""
     def __init__(self, parent=None):
+        """Constructs a frameless, modal dialog asking the user to confirm canceling the transcription."""
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -157,6 +158,7 @@ class DynamicListWidget(QListWidget):
 
 class VoiceProgressRowWidget(QWidget):
     def __init__(self, voice_num, voice_name, total_pages):
+        """Builds a UI row displaying the voice's current status icon, name, and page progress."""
         super().__init__()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
@@ -196,6 +198,7 @@ class VoiceProgressRowWidget(QWidget):
         layout.addWidget(self.box, 1)
 
     def set_status(self, status, current_page=None, total_pages=None):
+        """Updates the visual styling and icon of the row based on the current transcription state."""
         if current_page is not None and total_pages is not None:
             self.progress_label.setText(f"{current_page}/{total_pages}")
             self.progress_label.setVisible(True)
@@ -237,6 +240,7 @@ class TranscriptionProgressScreen(QWidget):
     semiautomatic_phase2_ready = pyqtSignal(str)
 
     def __init__(self):
+        """Constructs the progress screen, including the header, step indicator rings, and dynamic voice list."""
         super().__init__()
         self.setStyleSheet("background-color: #FAFAFA;")
         self.worker = None
@@ -363,6 +367,7 @@ class TranscriptionProgressScreen(QWidget):
         self.set_current_step(1)
 
     def start_transcription(self, project_name, voices_data, mode="auto"):
+        """Initializes and starts the background TranscriptionWorker for the selected mode."""
         self.current_project_name = project_name
         self.mode = mode
         self.populate_voices(voices_data)
@@ -376,16 +381,19 @@ class TranscriptionProgressScreen(QWidget):
         self.worker.start()
 
     def on_voice_progress(self, voice_idx, status, current, total):
+        """Slot to update a specific voice's progress row when the background thread emits an update."""
         if voice_idx < self.voice_list.count():
             item = self.voice_list.item(voice_idx)
             self.voice_list.itemWidget(item).set_status(status, current_page=current, total_pages=total)
             
     def on_general_progress(self, text, status, current, total):
+        """Slot to update the general progress row (used mainly in Step 4 for combined score processing)."""
         if self.voice_list.count() > 0:
             item = self.voice_list.item(0)
             self.voice_list.itemWidget(item).set_status(status, current_page=current, total_pages=total)
 
     def set_current_step(self, step_number):
+        """Updates the visual step indicator rings (1-4) to reflect the current pipeline phase."""
         titles = {
             1: "Staves detection",
             2: "Symbols detection",
@@ -451,6 +459,7 @@ class TranscriptionProgressScreen(QWidget):
             self.voice_list.needed_height = 60
 
     def populate_voices(self, voice_data_list):
+        """Clears and populates the dynamic list with initial 'waiting' rows for each voice."""
         self.voice_list.clear()
         total_height = 0
         
@@ -469,6 +478,7 @@ class TranscriptionProgressScreen(QWidget):
         self.voice_list.setMinimumHeight(min(total_height, 60 * 6)) 
 
     def attempt_cancel(self):
+        """Shows the cancel confirmation dialog and cleanly aborts the thread if accepted."""
         # Open our new beautifully styled dialog
         dialog = CancelDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -488,9 +498,11 @@ class TranscriptionProgressScreen(QWidget):
             self.worker.wait()
 
     def on_step_changed(self, step_num):
+        """Slot to visually advance the step rings when the pipeline enters a new phase."""
         self.set_current_step(step_num)
 
     def on_single_voice_finished(self, voice_idx):
+        """Transitions the UI automatically during semiautomatic modes when the first voice completes a phase."""
         # As soon as Voice 1 is done in semiautomatic mode, transition to validation screen!
         if self.mode == "semi" and voice_idx == 1:
             self.semiautomatic_ready.emit(self.current_project_name)
@@ -498,6 +510,7 @@ class TranscriptionProgressScreen(QWidget):
             self.semiautomatic_phase2_ready.emit(self.current_project_name)
 
     def on_finished(self):
+        """Signals the master window to navigate to the results screen once the automatic pipeline completes."""
         if self.mode in ["auto", "semi3"]:
             if hasattr(self, 'current_project_name'):
                 self.transcription_finished.emit(self.current_project_name)
@@ -519,12 +532,14 @@ class TranscriptionWorker(QThread):
     finished_success = pyqtSignal()
 
     def __init__(self, project_name, voices_data, mode="auto"):
+        """Initializes the background thread with the project parameters and pipeline mode."""
         super().__init__()
         self.project_name = project_name
         self.voices_data = voices_data
         self.mode = mode
 
     def run(self):
+        """Executes the chosen transcription pipeline mode sequentially in the background."""
         pipeline = TranscriptionPipeline()
         if self.mode == "auto":
             pipeline.run_automatic_pipeline(
@@ -564,6 +579,7 @@ class TranscriptionWorker(QThread):
         self.finished_success.emit()
         
     def set_aborted(self):
+        """Writes an abort flag to the project state JSON so downstream pipeline steps halt cleanly."""
         import json
         from pathlib import Path
         state_path = Path("Projects") / self.project_name / "project_state.json"

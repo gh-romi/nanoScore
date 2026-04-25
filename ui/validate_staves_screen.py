@@ -16,6 +16,7 @@ from PyQt6.QtCore import QThread
 class TopBarButton(QPushButton):
     """Custom button that supports an icon on either the left or right side."""
     def __init__(self, text, normal_svg, hover_svg, icon_size=24, icon_pos="left", width=250):
+        """Initializes a button with a fixed size and an icon positioned to the left or right of the text."""
         super().__init__()
         self.normal_svg = normal_svg
         self.hover_svg = hover_svg
@@ -59,6 +60,7 @@ class TopBarButton(QPushButton):
 class ToggleActionButton(QPushButton):
     """Custom button for Delete/Draw with a toggleable square icon state."""
     def __init__(self, text, is_selected=False, width=150):
+        """Initializes a toggle button with a custom-drawn square checkbox and text label."""
         super().__init__()
         self.is_selected = is_selected
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -129,6 +131,7 @@ class ToggleActionButton(QPushButton):
 class AnimatedSvgWidget(QWidget):
     """Draws an SVG and optionally rotates it for a smooth loading animation."""
     def __init__(self, file_path="", parent=None):
+        """Initializes the SVG renderer, transparency, and a timer for continuous rotation."""
         super().__init__(parent)
         self.renderer = QSvgRenderer(file_path) if file_path else QSvgRenderer()
         self.setStyleSheet("background: transparent; border: none;")
@@ -212,6 +215,7 @@ class VoiceTab(QFrame):
     unselectable_clicked = pyqtSignal()
 
     def __init__(self, voice_name, state="finished"):
+        """Builds a vertical tab displaying the voice name and its current background processing state."""
         super().__init__()
         self.voice_name = voice_name
         self.original_state = "finished" if state == "selected" else state # Store this to revert later
@@ -618,6 +622,7 @@ class ThumbnailLoaderWorker(QThread):
         self._is_cancelled = False
 
     def run(self):
+        """Iterates through the image tasks, loading, scaling, and applying rounded corners in the background."""
         for page_id, img_path in self.image_tasks:
             if self._is_cancelled:
                 break
@@ -653,6 +658,7 @@ class ImageCanvas(QWidget):
     undo_state_changed = pyqtSignal(bool)
 
     def __init__(self, parent=None):
+        """Constructs the interactive image canvas supporting bounding box drawing, deletion, and undo mechanics."""
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("background-color: white; border-radius: 12px; border: 2px solid #026BBC;")
@@ -832,6 +838,7 @@ class PageListItem(QFrame):
     clicked = pyqtSignal(int) # Emits page_id when clicked
 
     def __init__(self, page_id, num_boxes=0, is_selected=False):
+        """Builds a UI row displaying the page number, the count of detected staves, and a scaled thumbnail."""
         super().__init__()
         self.page_id = page_id
         self.is_selected = is_selected
@@ -908,6 +915,7 @@ class ValidateStavesScreen(QWidget):
     forward_requested = pyqtSignal()
 
     def __init__(self):
+        """Constructs the Validate Staves screen, integrating voice tabs, page lists, and the interactive canvas."""
         super().__init__()
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("background-color: #FAFAFA;")
@@ -1241,7 +1249,7 @@ class ValidateStavesScreen(QWidget):
         self.poll_timer.start(2000)
 
     def poll_project_state(self, initial_load=False):
-        """Reads project_state.json to update voice states and automatically load new JSONs."""
+        """Reads project_state.json to update the visual states of voice tabs and dynamically load newly processed data."""
         if not self.project_state_path.exists():
             return
             
@@ -1510,7 +1518,7 @@ class ValidateStavesScreen(QWidget):
         self.image_canvas.undo()
 
     def on_submit_clicked(self):
-        """Saves current staff boxes to JSON mathematically converting them to absolute coordinates."""
+        """Saves current staff boxes to JSON by converting relative UI coordinates back to absolute image pixels, and resets downstream pipelines."""
         if not self.current_voice or not self.project_path:
             return
             

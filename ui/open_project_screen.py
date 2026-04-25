@@ -15,10 +15,12 @@ class SizeCalculatorWorker(QThread):
 
     def __init__(self, folder_path):
         super().__init__()
+        """Initializes the worker with a target folder path and a cancellation flag."""
         self.folder_path = folder_path
         self._is_cancelled = False
 
     def run(self):
+        """Iterates through all files in the folder, summing their sizes while checking for cancellation."""
         if not self.folder_path.exists():
             self.size_calculated.emit(0)
             return
@@ -33,6 +35,7 @@ class SizeCalculatorWorker(QThread):
             self.size_calculated.emit(size_mb)
 
     def cancel(self):
+        """Flags the thread to stop processing early to prevent hanging on screen transitions."""
         self._is_cancelled = True
 
 
@@ -41,6 +44,7 @@ class DeleteProjectDialog(QDialog):
     """A beautifully styled, custom popup to confirm project deletion."""
     def __init__(self, project_name, parent=None):
         super().__init__(parent)
+        """Constructs a frameless, modal warning dialog asking the user to confirm project deletion."""
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(True)
@@ -178,6 +182,7 @@ class ProjectRowWidget(QWidget):
 
     def __init__(self, project_name, size_text):
         super().__init__()
+        """Builds a clickable row containing the project name, its calculated size, and a delete button."""
         self.project_name = project_name
         self.setCursor(Qt.CursorShape.PointingHandCursor) # Make the whole row look clickable
 
@@ -218,6 +223,7 @@ class ProjectRowWidget(QWidget):
         layout.addWidget(self.box)
 
     def update_size(self, size_mb):
+        """Updates the size label once the background SizeCalculatorWorker finishes."""
         self.size_label.setText(f"{size_mb} MB")
 
     def mousePressEvent(self, event):
@@ -237,6 +243,7 @@ class OpenProjectScreen(QWidget):
 
     def __init__(self):
         super().__init__()
+        """Constructs the Open Project screen, including the header, dynamically populated list, and thread management."""
         self.setStyleSheet("background-color: #FAFAFA;")
         self.size_threads = []
         
@@ -309,7 +316,7 @@ class OpenProjectScreen(QWidget):
         self.go_back_requested.emit()
 
     def load_projects(self):
-        """Scans the Projects directory and populates the list."""
+        """Scans the Projects directory, populates the list with placeholders, and spawns background threads for size calculation."""
         for worker in self.size_threads:
             if worker.isRunning():
                 worker.cancel()
@@ -334,6 +341,7 @@ class OpenProjectScreen(QWidget):
                 worker.start()
 
     def add_project_row(self, name, size_text):
+        """Creates a new ProjectRowWidget, connects its interactive signals, and appends it to the visual list."""
         row_widget = ProjectRowWidget(name, size_text)
         row_widget.open_requested.connect(self.handle_open_project)
         row_widget.delete_requested.connect(self.handle_delete_project)
@@ -347,6 +355,7 @@ class OpenProjectScreen(QWidget):
         return row_widget
 
     def handle_open_project(self, project_name):
+        """Safely stops background scanning and tells the MasterWindow to navigate to the project info screen."""
         print(f"Opening project: {project_name}")
         for worker in self.size_threads:
             if worker.isRunning():
@@ -355,6 +364,7 @@ class OpenProjectScreen(QWidget):
         self.open_project_requested.emit(project_name)
 
     def handle_delete_project(self, project_name, row_widget):
+        """Displays a confirmation dialog, and if accepted, deletes the project folder and removes the row from the UI."""
         # 1. Open our new beautifully styled dialog
         dialog = DeleteProjectDialog(project_name, self)
         

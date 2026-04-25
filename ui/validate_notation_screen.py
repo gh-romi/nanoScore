@@ -67,6 +67,7 @@ SYMBOL_HEIGHTS = {
 class InteractiveSymbolItem(QGraphicsSvgItem):
     """A draggable SVG symbol for the notation editor."""
     def __init__(self, sym_data, scene_w, scene_h, staff_top_y, line_spacing):
+        """Initializes a scalable, rotatable SVG symbol mapped to YOLO coordinates and sets up its physical anchor points."""
         class_id = sym_data.get("class_id", 0)
         icon_name = ID_TO_SVG.get(class_id, "note_quarter") # fallback to quarter note
         svg_path = f"icons/symbol_icons/{icon_name}.svg"
@@ -147,6 +148,7 @@ class InteractiveSymbolItem(QGraphicsSvgItem):
             self.grid_map[("S", pos_num)] = self.staff_top_y + (5 - pos_num) * self.line_spacing - (self.line_spacing / 2)
 
     def setup_anchor(self):
+        """Defines the visual vertical anchor point (0.0 to 1.0) based on the symbol type (e.g., G-clef curl is at 0.75)."""
         class_id = self.sym_data.get("class_id", 0)
         self.anchor_y_ratio = 0.5 # Default center
         if class_id == 0: # flat (bulb aligned with grid)
@@ -361,6 +363,7 @@ class InteractiveSymbolItem(QGraphicsSvgItem):
         return super().itemChange(change, value)
         
     def hoverMoveEvent(self, event):
+        """Detects if the mouse is hovering over the edges of a resizable item (like a slur) and changes the cursor."""
         if self.sym_data.get("class_id") == 31:
             scene_pos = event.scenePos()
             scene_rect = self.sceneBoundingRect()
@@ -378,12 +381,14 @@ class InteractiveSymbolItem(QGraphicsSvgItem):
         super().hoverMoveEvent(event)
 
     def hoverLeaveEvent(self, event):
+        """Resets the cursor to normal when leaving the hover area."""
         if getattr(self, 'resize_edge', None):
             self.setCursor(Qt.CursorShape.PointingHandCursor)
             self.resize_edge = None
         super().hoverLeaveEvent(event)
 
     def mousePressEvent(self, event):
+        """Intercepts clicks to handle deletions or to cache the pre-move state for the undo stack."""
         if event.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
             return
@@ -413,6 +418,7 @@ class InteractiveSymbolItem(QGraphicsSvgItem):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        """Handles manual resizing of bounding boxes (like stretching a slur) without triggering the standard move drag."""
         if getattr(self, 'is_resizing', False):
             delta_x = event.scenePos().x() - self.resize_start_pos.x()
             delta_x_norm = delta_x / self.scene_w
@@ -486,6 +492,7 @@ class InteractiveSymbolItem(QGraphicsSvgItem):
                     view.undo_state_changed.emit(True)
 
     def mouseReleaseEvent(self, event):
+        """Completes a drag or resize action and finalizes the change in the undo stack."""
         if getattr(self, 'is_resizing', False):
             self.is_resizing = False
             self.resize_edge = None
@@ -506,6 +513,7 @@ class InteractiveSymbolItem(QGraphicsSvgItem):
 class TopBarButton(QPushButton):
     """Custom button that supports an icon on either the left or right side."""
     def __init__(self, text, normal_svg, hover_svg, icon_size=24, icon_pos="left", width=250):
+        """Initializes a button with a fixed size and an icon positioned to the left or right of the text."""
         super().__init__()
         self.normal_svg = normal_svg
         self.hover_svg = hover_svg
@@ -549,6 +557,7 @@ class TopBarButton(QPushButton):
 class ToggleActionButton(QPushButton):
     """Custom button for Delete/Draw with a toggleable square icon state."""
     def __init__(self, text, is_selected=False, width=150):
+        """Initializes a toggle button with a custom-drawn square checkbox and text label."""
         super().__init__()
         self.is_selected = is_selected
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -619,6 +628,7 @@ class ToggleActionButton(QPushButton):
 class SymbolToolButton(QPushButton):
     """A square draggable button for the notation editor toolbar."""
     def __init__(self, icon_filename, parent=None):
+        """Initializes a toolbar button that visually represents a specific music symbol class."""
         super().__init__(parent)
         self.icon_filename = icon_filename
         self.setFixedSize(55, 65)
@@ -655,11 +665,13 @@ class SymbolToolButton(QPushButton):
         self.drag_start_pos = None
 
     def mousePressEvent(self, event):
+        """Records the initial click position to detect intentional dragging."""
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_pos = event.pos()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        """Initiates a QDrag operation if the mouse moves far enough, packaging the symbol ID into the MIME payload."""
         if not (event.buttons() & Qt.MouseButton.LeftButton): return
         if not self.drag_start_pos: return
         if (event.pos() - self.drag_start_pos).manhattanLength() < QApplication.startDragDistance(): return
@@ -683,6 +695,7 @@ class SymbolToolButton(QPushButton):
 class AnimatedSvgWidget(QWidget):
     """Draws an SVG and optionally rotates it for a smooth loading animation."""
     def __init__(self, file_path="", parent=None):
+        """Initializes the SVG renderer, transparency, and a timer for continuous rotation."""
         super().__init__(parent)
         self.renderer = QSvgRenderer(file_path) if file_path else QSvgRenderer()
         self.setStyleSheet("background: transparent; border: none;")
@@ -766,6 +779,7 @@ class VoiceTab(QFrame):
     unselectable_clicked = pyqtSignal()
 
     def __init__(self, voice_name, state="finished"):
+        """Builds a vertical tab displaying the voice name and its current background processing state."""
         super().__init__()
         self.voice_name = voice_name
         self.original_state = "finished" if state == "selected" else state # Store this to revert later
@@ -1055,6 +1069,7 @@ class ProceedDialog(QDialog):
 class ShortcutsDialog(QDialog):
     """A popup displaying keyboard shortcuts."""
     def __init__(self, parent=None):
+        """Constructs a frameless, modal dialog detailing all interactive canvas shortcuts."""
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -1186,6 +1201,7 @@ class ThumbnailLoaderWorker(QThread):
     thumbnail_loaded = pyqtSignal(int, QImage)
 
     def __init__(self, image_tasks):
+        """Initializes the worker with a list of (staff_id, image_path) tuples to load."""
         super().__init__()
         self.image_tasks = image_tasks # List of tuples: (item_id, image_path)
         self._is_cancelled = False
@@ -1225,6 +1241,7 @@ class ThumbnailLoaderWorker(QThread):
 class TopImageCanvas(QWidget):
     """A clean, lightweight canvas that only displays the raw staff image reference."""
     def __init__(self, parent=None):
+        """Constructs a static, non-interactive canvas to display the reference staff crop."""
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("background-color: white; border-radius: 12px; border: 2px solid #026BBC;")
@@ -1272,6 +1289,7 @@ class NotationEditorCanvas(QGraphicsView):
     undo_state_changed = pyqtSignal(bool)
     
     def __init__(self, parent=None):
+        """Constructs the vector canvas, establishing a fixed logical coordinate system (2000x300) independent of screen scale."""
         super().__init__(parent)
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
@@ -1298,6 +1316,7 @@ class NotationEditorCanvas(QGraphicsView):
         self.staff_top_y = (self.scene_h - (4 * self.line_spacing)) / 2
 
     def set_data(self, symbols):
+        """Populates the canvas with a deepcopy of the symbol dictionaries and redraws all elements."""
         self.symbols = copy.deepcopy(symbols) if symbols else []
         self.undo_stack = []
         self.undo_state_changed.emit(False)
@@ -1356,14 +1375,17 @@ class NotationEditorCanvas(QGraphicsView):
                             painter.drawLine(QPointF(scene_x - 40, y), QPointF(scene_x + 40, y))
                             
     def dragEnterEvent(self, event):
+        """Accepts valid dragged symbols coming from the toolbar."""
         if event.mimeData().hasText() and event.mimeData().text() in SVG_TO_ID:
             event.acceptProposedAction()
             
     def dragMoveEvent(self, event):
+        """Continuously accepts valid dragged symbols as they move across the canvas."""
         if event.mimeData().hasText() and event.mimeData().text() in SVG_TO_ID:
             event.acceptProposedAction()
             
     def dropEvent(self, event):
+        """Handles a drop event by instantiating a new InteractiveSymbolItem and translating the mouse coordinates to logical coordinates."""
         icon_filename = event.mimeData().text()
         class_id = SVG_TO_ID.get(icon_filename)
         if class_id is None:
@@ -1401,6 +1423,7 @@ class NotationEditorCanvas(QGraphicsView):
         event.acceptProposedAction()
 
     def resizeEvent(self, event):
+        """Automatically fits the logical scene into the physical viewport whenever the window changes size."""
         super().resizeEvent(event)
         self.fit_view()
         
@@ -1408,6 +1431,7 @@ class NotationEditorCanvas(QGraphicsView):
         self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def set_mode(self, mode):
+        """Switches the cursor mode for deletion interactions."""
         self.mode = mode
         if self.mode == "delete":
             self.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1415,6 +1439,7 @@ class NotationEditorCanvas(QGraphicsView):
             self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
             
     def undo(self):
+        """Reverts the last drawn, deleted, or edited symbol action using the stored `undo_stack` history."""
         if not self.undo_stack:
             return
             
@@ -1462,6 +1487,7 @@ class StaffListItem(QFrame):
     clicked = pyqtSignal(int) # Emits staff_id when clicked
 
     def __init__(self, staff_id, page_id, display_num, num_boxes=0, is_selected=False):
+        """Builds a UI row displaying the staff metadata and a scaled thumbnail reference."""
         super().__init__()
         self.staff_id = staff_id
         self.is_selected = is_selected
@@ -1543,6 +1569,7 @@ class ValidateNotationScreen(QWidget):
     forward_requested = pyqtSignal()
 
     def __init__(self):
+        """Constructs the Validate Notation screen, integrating the reference image, the vector canvas, and the symbol toolbars."""
         super().__init__()
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("background-color: #FAFAFA;")
@@ -1920,7 +1947,7 @@ class ValidateNotationScreen(QWidget):
         self.poll_timer.start(2000)
 
     def poll_project_state(self, initial_load=False):
-        """Reads project_state.json to update voice states and automatically load new JSONs."""
+        """Reads project_state.json to update the visual states of voice tabs and dynamically load newly processed data."""
         if not self.project_state_path.exists():
             return
             
@@ -2181,7 +2208,7 @@ class ValidateNotationScreen(QWidget):
         self.notation_canvas.undo()
 
     def on_submit_clicked(self):
-        """Saves current symbol boxes to JSON mathematically converting them to absolute coordinates."""
+        """Saves current symbol boxes to JSON by converting relative UI coordinates back to absolute image pixels, and resets downstream pipelines."""
         if not self.current_voice or not self.project_path:
             return
             

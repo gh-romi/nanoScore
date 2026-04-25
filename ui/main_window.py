@@ -12,6 +12,7 @@ class AboutDialog(QDialog):
     """A beautifully styled, custom popup dialog for the About info."""
     def __init__(self, parent=None):
         super().__init__(parent)
+        """Initializes the dialog's frameless window, transparent background, and internal layout."""
         # Make the window frameless and transparent so we can draw our own rounded corners
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -41,9 +42,10 @@ class AboutDialog(QDialog):
         version.setStyleSheet("color: #777777; font-size: 16px; border: none;")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        desc = QLabel("A historical voice books transcription tool.")
+        desc = QLabel("An automatic transcription app that converts historical scores into playable MusicXML for quick audio evaluation")
         desc.setStyleSheet("color: #333333; font-size: 16px; border: none; margin-top: 10px;")
         desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc.setWordWrap(True)
 
         close_btn = QPushButton("Close")
         close_btn.setFixedSize(100, 40)
@@ -70,6 +72,7 @@ class SvgHoverButton(QPushButton):
     """A custom button that swaps SVG files on hover to simulate a color change."""
     def __init__(self, normal_svg_path, hover_svg_path, icon_size=35):
         super().__init__()
+        """Initializes the SVG button with fixed dimensions to guarantee crisp rendering without scaling artifacts."""
         self.normal_svg = normal_svg_path
         self.hover_svg = hover_svg_path
 
@@ -94,7 +97,7 @@ class SvgHoverButton(QPushButton):
 
         layout.addWidget(self.icon_widget)
 
-    # --- THE HOVER MAGIC ---
+    # --- THE ON HOVER ICON CHANGE ---
     def enterEvent(self, event):
         """Triggered when the mouse touches the button."""
         self.icon_widget.load(self.hover_svg)
@@ -108,12 +111,14 @@ class SvgHoverButton(QPushButton):
 
 
 class MainMenuScreen(QWidget):
+    """The primary landing screen containing the main navigation actions and a collapsible drawer menu."""
     # signal tells the Master Window to switch screens
     go_to_create_project = pyqtSignal() 
     go_to_open_project = pyqtSignal()
 
     def __init__(self):
         super().__init__()
+        """Constructs the central UI layout, including the top header, primary action buttons, and overlay menus."""
         self.setStyleSheet("background-color: #FAFAFA;") 
 
         main_layout = QVBoxLayout(self)
@@ -145,12 +150,19 @@ class MainMenuScreen(QWidget):
         """)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        right_spacer = QLabel()
-        right_spacer.setFixedWidth(self.hamburger_btn.sizeHint().width())
+        # Absolute Centering Trick
+        left_container = QWidget()
+        left_container.setFixedWidth(100)
+        left_layout = QHBoxLayout(left_container)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.addWidget(self.hamburger_btn, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        header_layout.addWidget(self.hamburger_btn, 0, Qt.AlignmentFlag.AlignVCenter)
-        header_layout.addWidget(title_label, 1, Qt.AlignmentFlag.AlignVCenter) 
-        header_layout.addWidget(right_spacer, 0, Qt.AlignmentFlag.AlignVCenter)
+        right_container = QWidget()
+        right_container.setFixedWidth(100) # Must match the left side exactly!
+
+        header_layout.addWidget(left_container)
+        header_layout.addWidget(title_label, 1, Qt.AlignmentFlag.AlignCenter) 
+        header_layout.addWidget(right_container)
 
         main_layout.addWidget(header)
 
@@ -306,6 +318,7 @@ class MainMenuScreen(QWidget):
             self.drawer_menu.raise_()
 
     def show_about_dialog(self):
+        """Closes the drawer menu and presents the About popup to the user."""
         # We close the drawer first for a cleaner transition
         self.toggle_drawer()
         

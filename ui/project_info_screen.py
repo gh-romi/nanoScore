@@ -14,11 +14,13 @@ class SizeCalculatorWorker(QThread):
     size_calculated = pyqtSignal(int)
 
     def __init__(self, folder_path):
+        """Initializes the background worker with a target folder path and a cancellation flag."""
         super().__init__()
         self.folder_path = folder_path
         self._is_cancelled = False
 
     def run(self):
+        """Iterates through all files in the directory to compute the total size in megabytes."""
         if not self.folder_path.exists():
             self.size_calculated.emit(0)
             return
@@ -33,11 +35,13 @@ class SizeCalculatorWorker(QThread):
             self.size_calculated.emit(size_mb)
             
     def cancel(self):
+        """Flags the worker to stop processing early to safely allow screen transitions."""
         self._is_cancelled = True
 
 class SvgTextHoverButton(QPushButton):
     """Reused custom back button."""
     def __init__(self, text, normal_svg_path, hover_svg_path, icon_size=24, width=150):
+        """Initializes the button with a fixed size, an SVG icon, and text layout."""
         super().__init__()
         self.normal_svg = normal_svg_path
         self.hover_svg = hover_svg_path
@@ -75,6 +79,7 @@ class SvgTextHoverButton(QPushButton):
 class VoiceStatusRowWidget(QWidget):
     """The custom row for the progress of each voice."""
     def __init__(self, voice_name, steps_finished, total_steps=4):
+        """Builds a visual row displaying the voice name, text status, and a proportional progress bar."""
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
@@ -137,6 +142,7 @@ class ProjectInfoScreen(QWidget):
     export_requested = pyqtSignal(str)
 
     def __init__(self):
+        """Constructs the Project Info screen, splitting the layout into project metadata and voice progress tracking."""
         super().__init__()
         
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -337,6 +343,7 @@ class ProjectInfoScreen(QWidget):
         self.go_back_requested.emit()
 
     def load_project_from_name(self, project_name):
+        """Reads the `project_state.json` file to extract metadata and reconstructs the project's progress state."""
         self.current_project = project_name
         base_dir = Path("Projects") / project_name
         state_file = base_dir / "project_state.json"
@@ -404,10 +411,13 @@ class ProjectInfoScreen(QWidget):
         self.size_thread.start()
 
     def _update_size_label(self, size_mb):
+        """Callback to update the UI once the background size calculation completes."""
         self.size_lbl.setText(f"<span style='color: #333333; font-weight: bold;'>Size on disk:</span> <span style='color: #026BBC;'>{size_mb} MB</span>")
 
     def load_project_data(self, project_data):
         """
+        Populates the UI fields dynamically based on the provided project data dictionary.
+        
         Expects a dictionary like:
         {
             "name": "Beethoven Opus 1",

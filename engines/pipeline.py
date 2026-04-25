@@ -14,7 +14,7 @@ class TranscriptionPipeline:
     """
     
     def __init__(self, staff_model_path="yolo11n_staff_prediction.pt", notes_model_path="yolo11n_notes_prediction.pt", position_model_path="yolo11n-cls_position_classification.pt"):
-        # Initialize the YOLO engines
+        """Initializes the pipeline by loading the required YOLO models for staff, notes, and position detection into memory."""
         self.staff_model_path = staff_model_path
         self.notes_model_path = notes_model_path
         self.position_model_path = position_model_path
@@ -27,6 +27,7 @@ class TranscriptionPipeline:
         self.state_path = None
         
     def _init_project_state(self, base_dir, project_name, voices_data):
+        """Creates or loads the persistent `project_state.json` file to securely track transcription progress across sessions."""
         self.state_path = base_dir / "project_state.json"
         now = datetime.datetime.now().isoformat()
         
@@ -85,6 +86,7 @@ class TranscriptionPipeline:
         self._save_state()
 
     def _save_state(self):
+        """Writes the current in-memory state dictionary directly to the `project_state.json` file."""
         if not self.state or not self.state_path:
             return
         self.state["project_metadata"]["last_modified"] = datetime.datetime.now().isoformat()
@@ -92,23 +94,27 @@ class TranscriptionPipeline:
             json.dump(self.state, f, indent=4)
             
     def _update_voice_state(self, voice_folder, section, key, value):
+        """Updates a specific processing flag for a single voice (e.g., marking staff detection as complete)."""
         if self.state and voice_folder in self.state["voices"]:
             self.state["voices"][voice_folder][section][key] = value
             self._save_state()
             
     def _update_global_state(self, key, value):
+        """Updates a project-wide processing flag (e.g., marking global synchronization as complete)."""
         if self.state:
             self.state["global_state"][key] = value
             self._save_state()
 
     def run_automatic_pipeline(self, project_name: str, voices_data: list, step_callback=None, voice_progress_callback=None, general_progress_callback=None):
         """
-        Executes the first phase of automatic notes transcription.
+        Executes the full, uninterrupted end-to-end automatic transcription pipeline.
         
         Args:
             project_name (str): The chosen name for the project.
-            voices_data (list): A list of dictionaries containing voice details.
-                                e.g., [{'name': 'Soprano', 'pdf_path': 'path/to/file.pdf'}, ...]
+            voices_data (list): A list of dictionaries containing voice details (name, pdf_path).
+            step_callback (callable): UI hook to update the current phase step.
+            voice_progress_callback (callable): UI hook to update a specific voice's progress bar.
+            general_progress_callback (callable): UI hook to update the global progress bar.
         """
         # Fallback if the user left the project name empty
         if not project_name.strip():
@@ -725,7 +731,9 @@ class TranscriptionPipeline:
 
     def run_semiautomatic_phase1(self, project_name: str, voices_data: list, voice_progress_callback=None, single_voice_finished_callback=None):
         """
-        Executes ONLY Phase 1 (Staff Detection) sequentially.
+        Semiautomatic Phase 1: Extracts images and predicts staff bounding boxes.
+        Halts before cropping to allow human validation of the staff locations.
+        
         Emits `single_voice_finished_callback(voice_idx)` the moment each voice finishes
         so the UI can transition or unlock tabs dynamically.
         """
@@ -841,7 +849,9 @@ class TranscriptionPipeline:
 
     def run_semiautomatic_phase2(self, project_name: str, voices_data: list, voice_progress_callback=None, single_voice_finished_callback=None, step_callback=None):
         """
-        Executes Phase 2 (Cropping Validated Staves, Notes Detection, Position Classification) sequentially.
+        Semiautomatic Phase 2: Crops validated staves, detects symbols, and classifies their positions.
+        Halts after classification to allow human validation of the musical notation.
+        
         Emits `single_voice_finished_callback(voice_idx)` the moment each voice finishes.
         """
         base_dir = Path("Projects") / project_name
@@ -1100,7 +1110,8 @@ class TranscriptionPipeline:
 
     def run_semiautomatic_phase3(self, project_name: str, voices_data: list, step_callback=None, general_progress_callback=None):
         """
-        Executes Phase 3 (Score Reconstruction: Phases 4-7 from automatic pipeline).
+        Semiautomatic Phase 3: Converts validated semantic data into a synchronized MusicXML score.
+        Automatically executes Phases 4 through 7 of the standard pipeline.
         """
         base_dir = Path("Projects") / project_name
         self.state_path = base_dir / "project_state.json"
